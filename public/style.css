@@ -461,3 +461,29 @@ kbd {
 /* 跟随/定位 改为图标+文字，覆盖前面的纯文字规则 */
 .term-actions #term-follow, .term-actions #term-locate { display: inline-flex; align-items: center; gap: 4px; }
 .term-actions #term-follow svg, .term-actions #term-locate svg { flex-shrink: 0; }
+
+/* ---------- R2修：审美打磨 + 变更高亮 ---------- */
+/* 换肤过渡纳入 color，并与 body 统一 0.28s，消除文字瞬切 */
+body { transition: background-color 0.28s ease, color 0.28s ease; }
+#sidebar, #topbar, #content, #preview, #terminal-panel, .term-head, #filter-bar, #main,
+.nav-list li, .crumb, .brand-name, .brand-sub, .nav-title { transition: background-color 0.28s ease, border-color 0.28s ease, color 0.28s ease; }
+
+/* 浮层双层阴影：1px 贴边描边 + 远柔光，替代单层廉价大模糊 */
+.cmdk-panel, .input-dialog, .context-menu, .guide-card, .lightbox > img {
+  box-shadow: 0 0 0 0.5px rgba(0,0,0,0.12), 0 12px 40px rgba(0,0,0,0.22) !important;
+}
+[data-theme="terminal"] .cmdk-panel, [data-theme="terminal"] .input-dialog,
+[data-theme="terminal"] .context-menu, [data-theme="terminal"] .guide-card {
+  box-shadow: 0 0 0 0.5px rgba(0,0,0,0.5), 0 14px 44px rgba(0,0,0,0.5) !important;
+}
+
+/* agent 改动文件的高亮：accent 描边 + 角标，4.5s 后淡出 */
+.item.changed, .row.changed { position: relative; box-shadow: inset 0 0 0 1.5px var(--accent); border-radius: var(--radius); }
+.item.changed::after, .row.changed::after {
+  content: "改"; position: absolute; top: 4px; right: 4px; z-index: 3;
+  background: var(--accent); color: var(--accent-ink); font-size: 10px; font-weight: 700;
+  padding: 1px 5px; border-radius: 5px; animation: changedPulse 0.5s ease;
+}
+.row.changed::after { top: 50%; transform: translateY(-50%); right: 8px; }
+@keyframes changedPulse { from { transform: scale(0.6); opacity: 0; } to { transform: scale(1); opacity: 1; } }
+.row.changed::after { animation: none; }

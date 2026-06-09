@@ -321,17 +321,24 @@ async function writeTextFile(p, content, expectedMtime) {
   const file = resolvePath(p);
   if (!TEXT_EXT.has(ext(file))) throw new Error('只支持文本类文件编辑');
   if (typeof content !== 'string') throw new Error('内容非法');
-  // 并发覆盖保护：打开编辑后文件被外部（如 agent）改过，拒绝盲覆盖
+  // 并发覆盖保护：打开编辑后文件被外部（agent）改过或删除，拒绝盲覆盖
   if (expectedMtime) {
-    let cur = 0;
-    try { cur = (await fsp.stat(file)).mtimeMs; } catch { /* 新文件 */ }
-    if (cur && Math.abs(cur - expectedMtime) > 1) { const e = new Error('文件已被外部修改'); e.conflict = true; throw e; }
+    let cur = 0, missing = false;
+    try { cur = (await fsp.stat(file)).mtimeMs; } catch { missing = true; }
+    if (missing || (cur && Math.abs(cur - expectedMtime) > 1)) {
+      const e = new Error(missing ? '文件已被外部删除' : '文件已被外部修改'); e.conflict = true; throw e;
+    }
   }
   // 原子写：临时文件 + fsync + rename，写到一半崩溃也不会损坏原文件
-  const tmp = file + '.fanbox-tmp-' + process.pid;
-  const fh = await fsp.open(tmp, 'w');
-  try { await fh.writeFile(content, 'utf8'); await fh.sync(); } finally { await fh.close(); }
-  await fsp.rename(tmp, file);
+  const tmp = `${file}.fanbox-tmp-${process.pid}-${Date.now()}`;
+  try {
+    const fh = await fsp.open(tmp, 'w');
+    try { await fh.writeFile(content, 'utf8'); await fh.sync(); } finally { await fh.close(); }
+    await fsp.rename(tmp, file);
+  } catch (e) {
+    await fsp.unlink(tmp).catch(() => {}); // 失败清理临时文件，不留残骸
+    throw e;
+  }
   const st = await fsp.stat(file);
   return { ok: true, size: st.size, mtime: st.mtimeMs };
 }
@@ -354,7 +361,15 @@ function trashPath(p) {
     } else {
       cmd = `gio trash ${shellQuote(target)} || trash-put ${shellQuote(target)} || trash ${shellQuote(target)}`;
     }
-    exec(cmd, (err) => err ? resolve({ ok: false, error: err.message }) : resolve({ ok: true }));
+    exec(cmd, (err) => {
+      if (!err) return resolve({ ok: true });
+      let msg = err.message;
+      // Finder 自动化未授权（-1743/-600）给人话
+      if (PLATFORM === 'darwin' && /-1743|-600|not allowed|authoriz/i.test(msg)) {
+        msg = '需在「系统设置 → 隐私与安全性 → 自动化」里允许翻箱控制 Finder（首次删除会弹授权）';
+      }
+      resolve({ ok: false, error: msg });
+    });
   });
 }
 

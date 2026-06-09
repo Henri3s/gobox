@@ -252,7 +252,7 @@ function thumbHtml(e) {
 }
 function gridItem(e, i) {
   const el = document.createElement('div');
-  el.className = 'item' + (e.hidden ? ' hidden-file' : '') + (state.selected === e.path ? ' selected' : '');
+  el.className = 'item' + (e.hidden ? ' hidden-file' : '') + (state.selected === e.path ? ' selected' : '') + (state.changed && state.changed.has(e.name) ? ' changed' : '');
   el.dataset.idx = i;
   el.innerHTML = `<div class="icon">${thumbHtml(e)}</div><div class="fname">${escapeHtml(e.name)}</div>${favBtn(e)}`;
   bindItem(el, e);
@@ -260,7 +260,7 @@ function gridItem(e, i) {
 }
 function listRow(e, i) {
   const el = document.createElement('div');
-  el.className = 'row' + (e.hidden ? ' hidden-file' : '') + (state.selected === e.path ? ' selected' : '');
+  el.className = 'row' + (e.hidden ? ' hidden-file' : '') + (state.selected === e.path ? ' selected' : '') + (state.changed && state.changed.has(e.name) ? ' changed' : '');
   el.dataset.idx = i;
   el.innerHTML = `<div class="icon">${e.kind === 'image' ? `<img class="thumb-sm" loading="lazy" src="/api/raw?path=${encodeURIComponent(e.path)}">` : `<span class="svg-icon">${iconSvg(e, 18)}</span>`}</div>
     <div class="fname">${escapeHtml(e.name)}</div>
@@ -587,6 +587,7 @@ function showContextMenu(ev, e) {
   if (e.isDir) items.push({ label: '打开', fn: () => navigate(e.path) });
   else items.push({ label: '预览', fn: () => { state.selected = e.path; openPreview(e); renderFiles(); } });
   if (e.isDir) items.push({ label: '在终端打开', fn: () => term.openInDir(e.path) });
+  else items.push({ label: '在所在目录开终端', fn: () => term.openInDir(dirOf(e.path)) });
   if (e.kind === 'text') items.push({ label: '编辑文本', fn: () => enterEditMode(e) });
   items.push({ label: '在编辑器打开', fn: () => openWith(e.path, 'editor') });
   items.push({ label: '在 Finder 显示', fn: () => openWith(e.path, 'reveal') });
@@ -1056,7 +1057,7 @@ const term = {
       } catch { /* 回退默认 DOM renderer */ }
     }
     if (fit) try { fit.fit(); } catch { /* */ }
-    const sess = { id, xterm, fit, host, dead: false, title: baseOf(startDir || '') || 'shell' };
+    const sess = { id, xterm, fit, host, dead: false, startDir, title: baseOf(startDir || '') || 'shell' };
     this.sessions.push(sess);
     this.activate(id);
     const r = await window.fanboxPty.spawn({ id, cwd: startDir, cols: xterm.cols, rows: xterm.rows });
@@ -1070,8 +1071,8 @@ const term = {
   },
   async respawn(sess) {
     sess.dead = false;
-    sess.xterm.write('\r\n');
-    const r = await window.fanboxPty.spawn({ id: sess.id, cwd: state.cwd, cols: sess.xterm.cols, rows: sess.xterm.rows });
+    sess.xterm.reset(); // 清掉死亡残留，新 shell 提示符不和旧画面叠在一起
+    const r = await window.fanboxPty.spawn({ id: sess.id, cwd: sess.startDir || state.cwd, cols: sess.xterm.cols, rows: sess.xterm.rows });
     if (!r.ok) { sess.dead = true; sess.xterm.write('\x1b[31m重开失败：' + (r.error || '') + '\x1b[0m\r\n'); }
   },
   activate(id) {
@@ -1119,8 +1120,15 @@ if (window.fanboxPty) {
 // 文件变化 → 自动刷新列表（看着 agent 干活）；编辑中不动预览，避免吞掉未保存内容
 if (window.fanboxFs) {
   let rt = null;
-  window.fanboxFs.onChanged(({ dir }) => {
+  state.changed = new Set();
+  window.fanboxFs.onChanged(({ dir, filename }) => {
     if (dir !== state.cwd || state.recentMode) return;
+    // 高亮被 agent 改动的文件：取相对路径的顶层名（递归监听下可能是 src/foo.js → src）
+    if (filename) {
+      const top = String(filename).split('/')[0];
+      state.changed.add(top);
+      setTimeout(() => { state.changed.delete(top); renderFiles(); }, 4500);
+    }
     clearTimeout(rt);
     rt = setTimeout(async () => {
       await refresh();

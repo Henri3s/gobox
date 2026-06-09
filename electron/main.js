@@ -136,7 +136,9 @@ ipcMain.handle('fs:watch', (e, { dir }) => {
   if (!dir || !fs.existsSync(dir)) return { ok: false };
   try {
     // 递归监听：agent 在子目录改文件也能触发刷新（前端按 250ms 防抖，事件风暴只刷一次）
-    watcher = fs.watch(dir, { persistent: false, recursive: true }, (evt, filename) => {
+    // macOS(FSEvents)/Windows 原生支持递归；Linux 递归不可靠，降级为非递归监听当前目录
+    const recursive = process.platform !== 'linux';
+    watcher = fs.watch(dir, { persistent: false, recursive }, (evt, filename) => {
       if (win && !win.isDestroyed()) win.webContents.send('fs:changed', { dir, filename: filename ? filename.toString() : null });
     });
     watchDir = dir;
