@@ -11,6 +11,18 @@
 
 ## [Unreleased]
 
+## [1.5.0] - 2026-06-11
+
+### Added
+- 「Skills 透视」面板（侧栏左下角入口）：本机所有 agent skills 的统一视图
+  - 聚合五类来源：`~/.claude/skills`、最近 agent 项目的 `.claude/skills`、Claude 插件、`~/.codex/skills`、`~/.agents/skills`，跨端同名 skill 标「N 处副本」
+  - 触发统计：解析 Claude Code 会话日志（模型自动触发 + 用户手动 / 调用）和 Codex rollout（按会话去重），45 天触发次数 + 最后触发时间，一眼分出活跃和吃灰
+  - 健康检查：description 超 1536 字符截断线（后段触发词模型看不见）、缺 frontmatter、缺 SKILL.md、zip 等残留物，红黄绿标注 + 「仅看问题」过滤
+  - Context 预算条：全局常驻的描述总量 vs 预算估算线，超限红色警示（超出部分会被静默丢弃）
+  - 启停开关：停用 = 移入 `_disabled/` 子目录（立即对模型不可见、不删文件、可逆）。不用官方 skillOverrides——该配置在用户级有已知失效 bug（claude-code#50631）。软链接型 skill 先解析绝对目标再迁移，避免相对链接断链
+  - ▶ 终端调用 + 拖拽：skill 行拖进内嵌终端（或点详情按钮），按会话里跑的 agent 自动注入 `/skill-name`（Claude Code）或 `$skill-name`（Codex）
+  - 卸载：移到系统废纸篓，随时可恢复
+
 ## [1.4.3] - 2026-06-11
 
 ### Added
