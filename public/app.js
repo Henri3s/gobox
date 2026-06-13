@@ -604,9 +604,14 @@ function csvTable(text, delim) {
   h += '</tbody></table></div>';
   return h;
 }
-// 把绝对路径编码成 /fs/ 端点 URL，逐段 encode 以保留目录层级（相对引用按段解析）
+// 把绝对路径编码成 /fs/ 端点 URL，逐段 encode 以保留目录层级（相对引用按段解析）。
+// 指向「预览专用端口」(主端口+1)：那个源只出文件、不含 /api，且与 App 跨源——
+// 配合 iframe 的 allow-same-origin，页面能完整交互又碰不到 App 本体（防接管/删文件）。
 function fsUrl(p, mtime) {
-  return '/fs/' + p.split('/').filter(Boolean).map(encodeURIComponent).join('/') + '?v=' + (mtime || 0);
+  const segs = '/fs/' + p.split('/').filter(Boolean).map(encodeURIComponent).join('/') + '?v=' + (mtime || 0);
+  const base = (location.protocol === 'http:' && location.port)
+    ? `${location.protocol}//${location.hostname}:${Number(location.port) + 1}` : '';
+  return base + segs;
 }
 function renderHtmlPreview(data, meta) {
   const body = $('#preview-body');
@@ -617,7 +622,7 @@ function renderHtmlPreview(data, meta) {
     `<div class="html-preview-host">
       ${meta}
       <div class="pv-toolbar"><button id="html-toggle" class="ghost-btn">查看源码</button><button id="html-browser" class="ghost-btn">${ic('globe', 'currentColor', 13)} 浏览器打开（看完整交互）</button></div>
-      <div class="iframe-wrap"><iframe class="iframe-preview" sandbox="allow-scripts" scrolling="yes" src="${fsUrl(data.path, data.mtime)}"></iframe></div>
+      <div class="iframe-wrap"><iframe class="iframe-preview" sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-modals" scrolling="yes" src="${fsUrl(data.path, data.mtime)}"></iframe></div>
     </div>`;
   // 桌面 Chromium 的 iframe 不认 viewport meta，定宽桌面页在窄预览框里只露左上角。
   // /fs/ 注入的测宽脚本会把页面自然宽度 postMessage 过来：超出容器就整页等比缩到适配宽度。
@@ -3482,14 +3487,14 @@ function liveHtml(e, first) {
   const body = $('#preview-body');
   let wrap = body.querySelector('.follow-html');
   if (first || !wrap) {
-    body.innerHTML = `<div class="follow-html"><iframe class="iframe-preview" sandbox="allow-scripts" src="${fsUrl(e.path, Date.now())}"></iframe></div>`;
+    body.innerHTML = `<div class="follow-html"><iframe class="iframe-preview" sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-modals" src="${fsUrl(e.path, Date.now())}"></iframe></div>`;
     return;
   }
   if (follow.swapping) { follow.swapDirty = true; return; } // 正在换页，攒一次换完补刷
   follow.swapping = true;
   const next = document.createElement('iframe');
   next.className = 'iframe-preview follow-next';
-  next.setAttribute('sandbox', 'allow-scripts'); // 与常规 html 预览同口径：不给 same-origin，防 RCE
+  next.setAttribute('sandbox', 'allow-scripts allow-same-origin allow-forms allow-popups allow-modals'); // 与常规 html 预览同口径：经隔离端口给 same-origin（跨源于 App，接管不了）
   let swapped = false;
   const swap = () => {
     if (swapped) return;

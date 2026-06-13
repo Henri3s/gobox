@@ -2048,6 +2048,36 @@ server.on('error', (err) => {
   process.exit(1);
 });
 
+// 预览专用服务器：只出 /fs/ 静态文件，绝不暴露 /api（删文件/开应用等危险接口）。
+// HTML 预览 iframe 指到这个独立端口 + 开 allow-same-origin：页面拿到「自己的」完整源
+// （localStorage/fetch 都能跑），却与 App 跨源——碰不到 App 的 DOM、localStorage 和 /api，
+// 也无法摘掉 sandbox 反向接管（那要求同源）。可读范围再收紧到主目录、挡掉点目录（.ssh/.aws/.config…），
+// 防止恶意预览页 same-origin 下读敏感文件外泄。
+const PREVIEW_PORT = PORT + 1;
+function previewPathAllowed(file) {
+  const real = path.resolve(file);
+  const home = path.resolve(HOME);
+  if (real !== home && !real.startsWith(home + path.sep)) return false; // 只放行主目录以下
+  return !real.slice(home.length).split(path.sep).some((s) => s.startsWith('.')); // 任一段是点目录/点文件 → 拒
+}
+const previewServer = http.createServer(async (req, res) => {
+  if (!hostAllowed(req)) { res.writeHead(403); res.end('forbidden host'); return; }
+  if (req.method !== 'GET' && req.method !== 'HEAD') { res.writeHead(405); res.end('method not allowed'); return; }
+  const p = new URL(req.url, `http://localhost:${PREVIEW_PORT}`).pathname;
+  if (!p.startsWith('/fs/')) { res.writeHead(403); res.end('preview server serves /fs/ only'); return; }
+  const raw = decodeURIComponent(p.slice(3));
+  let resolved;
+  try { resolved = resolvePath(raw); } catch { res.writeHead(400); res.end('bad path'); return; }
+  if (!previewPathAllowed(resolved)) { res.writeHead(403); res.end('outside preview scope'); return; }
+  try {
+    const fsExt = (ext(raw) || '').toLowerCase();
+    if (fsExt === 'html' || fsExt === 'htm') return serveHtmlPreview(req, res, raw);
+    return serveRaw(req, res, raw);
+  } catch (err) { res.writeHead(500); res.end(String((err && err.message) || err)); }
+});
+previewServer.on('error', (err) => { console.error('  ⚠️  预览服务器启动失败：', err.message); });
+previewServer.listen(PREVIEW_PORT, '127.0.0.1', () => { console.log(`  🖼  预览源（隔离）：http://localhost:${PREVIEW_PORT}`); });
+
 server.listen(PORT, '127.0.0.1', () => {
   const link = `http://localhost:${PORT}`;
   console.log('\n  📦  FanBox 已启动');
