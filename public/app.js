@@ -1555,6 +1555,195 @@ async function organizeLaunch(dirPath) {
   if (!r.ok) { toast(r.error || 'AI 整理启动失败', true); return; }
   term.runInDir(dirPath, r.cmd, `${r.engine === 'codex' ? 'Codex' : 'Claude'} 已开聊——先摊方案，你点头它才动手`);
 }
+// ---------- 自动整理（Auto-Tidy）：定时扫描 + 规则匹配 + 直接移动 ----------
+// 与 AI 整理互补：那个是一次性、交互式、语义判断；这个是持续、定时、确定性规则。
+// 两个入口：① 文件区右键/空白菜单「自动整理此文件夹…」打开配置 modal（源默认填当前目录）
+//           ② 侧栏「自动整理」打开总览 modal（列出所有规则集，开关/扫描/撤销/编辑/删除）
+// 规则配置 modal：名称 + 源 + 间隔 + 规则行（字段/操作符/值/目标，可增删）
+const AT_FIELDS = {
+  extension: { label: '后缀', ops: [['is', '是'], ['isNot', '不是']], valueType: 'text', ph: '如 png' },
+  nameContains: { label: '名称含', ops: [['contains', '包含'], ['notContains', '不包含']], valueType: 'text', ph: '关键词' },
+  olderThan: { label: '早于', ops: [['days', '天']], valueType: 'number', ph: '30' },
+  biggerThan: { label: '大于', ops: [['mb', 'MB']], valueType: 'number', ph: '100' },
+  kind: { label: '类型', ops: [['is', '是']], valueType: 'select', options: [['image', '图片'], ['video', '视频'], ['audio', '音频'], ['doc', '文档'], ['archive', '压缩包']] },
+};
+function atFieldOpts(selected) {
+  return Object.keys(AT_FIELDS).map((k) => `<option value="${k}"${k === selected ? ' selected' : ''}>${AT_FIELDS[k].label}</option>`).join('');
+}
+function atOpOpts(field, selected) {
+  const f = AT_FIELDS[field] || { ops: [] };
+  return f.ops.map(([v, l]) => `<option value="${v}"${v === selected ? ' selected' : ''}>${l}</option>`).join('');
+}
+function atValueInput(rule) {
+  const f = AT_FIELDS[rule.field] || {};
+  if (f.valueType === 'select') {
+    return `<select class="at-val">${(f.options || []).map(([v, l]) => `<option value="${v}"${v === rule.value ? ' selected' : ''}>${l}</option>`).join('')}</select>`;
+  }
+  return `<input class="at-val" type="${f.valueType === 'number' ? 'number' : 'text'}" placeholder="${f.ph || ''}" value="${escapeHtml(String(rule.value || ''))}">`;
+}
+// 读一行 DOM 回规则对象
+function atReadRow(row) {
+  const field = row.querySelector('.at-field').value;
+  const op = row.querySelector('.at-op').value;
+  const valEl = row.querySelector('.at-val');
+  const value = valEl ? valEl.value : '';
+  const target = row.querySelector('.at-target').value;
+  const enabled = row.querySelector('.at-enabled').checked;
+  return { id: row.dataset.id || ('r_' + Date.now() + Math.random().toString(36).slice(2, 5)), enabled, field, op, value, target };
+}
+// 渲染规则编辑 modal。ruleset 为 null = 新建
+async function autoTidyEdit(ruleset) {
+  const rs = ruleset || { id: '', name: '', source: state.cwd, enabled: true, intervalMin: 0, rules: [] };
+  const old = $('.at-overlay'); if (old) old.remove();
+  const ov = document.createElement('div');
+  ov.className = 'input-overlay at-overlay';
+  const renderRows = () => rs.rules.map((r) => `
+    <div class="at-rule" data-id="${r.id || ''}">
+      <input class="at-enabled" type="checkbox" title="本条规则开关"${r.enabled !== false ? ' checked' : ''}>
+      <select class="at-field">${atFieldOpts(r.field || 'extension')}</select>
+      <select class="at-op">${atOpOpts(r.field || 'extension', r.op)}</select>
+      <span class="at-value-cell">${atValueInput(r)}</span>
+      <span class="at-arrow">→</span>
+      <input class="at-target" type="text" placeholder="目标文件夹，如 ~/Pictures/截图" value="${escapeHtml(String(r.target || ''))}">
+      <button class="at-del ghost-btn" title="删除这条规则">✕</button>
+    </div>`).join('');
+  ov.innerHTML = `<div class="input-dialog at-dialog">
+    <div class="input-title">自动整理规则集</div>
+    <div class="at-form">
+      <label>名称 <input class="at-name" type="text" placeholder="如 下载文件夹分类" value="${escapeHtml(rs.name || '')}"></label>
+      <label class="at-en"><input class="at-enabled-set" type="checkbox"${rs.enabled !== false ? ' checked' : ''}> 启用</label>
+      <label>源文件夹 <input class="at-source" type="text" placeholder="监听哪个文件夹" value="${escapeHtml(rs.source || '')}"></label>
+      <label>扫描间隔 <input class="at-interval" type="number" min="0" value="${Number(rs.intervalMin) || 0}"> 分钟（0 = 仅手动）</label>
+      <div class="at-rules-head">规则（从上到下匹配，命中即停）</div>
+      <div class="at-rules">${renderRows()}</div>
+      <button class="at-add ghost-btn">＋ 添加规则</button>
+      <div class="at-foot">
+        <span class="at-last"></span>
+        <span class="at-actions"><button class="at-cancel ghost-btn">取消</button> <button class="at-save">保存</button></span>
+      </div>
+    </div>
+  </div>`;
+  document.body.appendChild(ov);
+  const close = () => ov.remove();
+  const onKey = (ev) => { if (ev.key === 'Escape') { ev.preventDefault(); close(); } };
+  document.addEventListener('keydown', onKey, true);
+  ov.onclick = (ev) => { if (ev.target === ov) close(); };
+  ov.querySelector('.at-cancel').onclick = close;
+  // 字段变化时刷新操作符和值输入类型
+  const refreshRowDeps = (row) => {
+    const field = row.querySelector('.at-field').value;
+    const opSel = row.querySelector('.at-op');
+    const oldOp = opSel.value;
+    opSel.innerHTML = atOpOpts(field, oldOp);
+    const cell = row.querySelector('.at-value-cell');
+    cell.innerHTML = atValueInput({ field, value: '', op: opSel.value });
+  };
+  ov.querySelectorAll('.at-rule').forEach((row) => {
+    row.querySelector('.at-field').onchange = () => refreshRowDeps(row);
+    row.querySelector('.at-del').onclick = () => { row.remove(); };
+  });
+  ov.querySelector('.at-add').onclick = () => {
+    const div = document.createElement('div');
+    div.className = 'at-rule';
+    div.dataset.id = '';
+    div.innerHTML = `<input class="at-enabled" type="checkbox" checked>
+      <select class="at-field">${atFieldOpts('extension')}</select>
+      <select class="at-op">${atOpOpts('extension', 'is')}</select>
+      <span class="at-value-cell">${atValueInput({ field: 'extension' })}</span>
+      <span class="at-arrow">→</span>
+      <input class="at-target" type="text" placeholder="目标文件夹">
+      <button class="at-del ghost-btn">✕</button>`;
+    div.querySelector('.at-field').onchange = () => refreshRowDeps(div);
+    div.querySelector('.at-del').onclick = () => div.remove();
+    ov.querySelector('.at-rules').appendChild(div);
+  };
+  // 显示最近一次执行摘要 + 撤销
+  if (rs.lastRun) {
+    const ts = new Date(rs.lastRun).toLocaleString('zh-CN');
+    const foot = ov.querySelector('.at-last');
+    foot.innerHTML = `最近：${ts} ${rs.lastSummary || ''}` + (rs.lastLog ? ` <a class="at-undo-link">撤销</a>` : '');
+    const undoLink = foot.querySelector('.at-undo-link');
+    if (undoLink) undoLink.onclick = async () => {
+      undoLink.textContent = '撤销中…';
+      const u = await apiPost('/api/autotidy/undo', { id: rs.id });
+      if (u.ok) toast(`已恢复 ${u.restored.length} 个` + (u.failed.length ? `，${u.failed.length} 个失败` : ''), !!u.failed.length);
+      else toast(u.error || '撤销失败', true);
+      close();
+      autoTidyOverview();
+    };
+  }
+  ov.querySelector('.at-save').onclick = async () => {
+    const name = ov.querySelector('.at-name').value.trim();
+    const source = ov.querySelector('.at-source').value.trim();
+    if (!name) { toast('请填名称', true); return; }
+    if (!source) { toast('请填源文件夹', true); return; }
+    const rules = [...ov.querySelectorAll('.at-rule')].map(atReadRow).filter((r) => r.value !== '' || r.field === 'kind');
+    if (!rules.length) { toast('至少加一条规则', true); return; }
+    const payload = {
+      id: rs.id || undefined, name, source, enabled: ov.querySelector('.at-enabled-set').checked,
+      intervalMin: Number(ov.querySelector('.at-interval').value) || 0, rules,
+    };
+    const r = await apiPost('/api/autotidy/save', payload);
+    if (r.ok) { toast('已保存'); close(); }
+    else toast(r.error || '保存失败', true);
+  };
+}
+
+// 规则集总览 modal（侧栏入口）：列出所有规则集，开关/扫描/撤销/编辑/删除/新建
+async function autoTidyOverview() {
+  const old = $('.at-overview'); if (old) old.remove();
+  const ov = document.createElement('div');
+  ov.className = 'input-overlay at-overview';
+  document.body.appendChild(ov);
+  const close = () => ov.remove();
+  const onKey = (ev) => { if (ev.key === 'Escape') { ev.preventDefault(); close(); } };
+  document.addEventListener('keydown', onKey, true);
+  ov.onclick = (ev) => { if (ev.target === ov) close(); };
+  const render = async () => {
+    const d = await api('/api/autotidy/list');
+    const sets = d.rulesets || [];
+    ov.innerHTML = `<div class="input-dialog at-ov-dialog">
+      <div class="input-title">自动整理 <button class="at-new">＋ 新建规则集</button></div>
+      <div class="at-ov-body">${sets.length ? sets.map((rs) => `
+        <div class="at-ov-item" data-id="${rs.id}">
+          <label class="at-ov-toggle"><input type="checkbox"${rs.enabled !== false ? ' checked' : ''}></label>
+          <div class="at-ov-main">
+            <div class="at-ov-name">${escapeHtml(rs.name)}</div>
+            <div class="at-ov-sub">${escapeHtml(rs.source.replace(state.home, '~'))} · ${(rs.rules || []).length} 条规则 · ${rs.intervalMin > 0 ? `每 ${rs.intervalMin} 分钟` : '仅手动'}${rs.lastRun ? ` · 最近 ${new Date(rs.lastRun).toLocaleString('zh-CN')} ${rs.lastSummary || ''}` : ''}</div>
+          </div>
+          <div class="at-ov-btns">
+            <button class="at-ov-run ghost-btn" title="立即扫描一次">扫描</button>
+            <button class="at-ov-edit ghost-btn">编辑</button>
+            <button class="at-ov-del ghost-btn" title="删除">✕</button>
+          </div>
+        </div>`).join('') : '<div class="empty-state">还没有规则集<br><br><span class="usage-sub">点「新建规则集」，或在文件区右键「自动整理此文件夹…」</span></div>'}</div>
+    </div>`;
+    ov.querySelector('.at-new').onclick = () => { close(); autoTidyEdit(null); };
+    ov.querySelectorAll('.at-ov-item').forEach((item) => {
+      const id = item.dataset.id;
+      const rs = sets.find((x) => x.id === id);
+      item.querySelector('.at-ov-toggle input').onchange = async (e) => {
+        await apiPost('/api/autotidy/save', { ...rs, enabled: e.target.checked });
+        render();
+      };
+      item.querySelector('.at-ov-run').onclick = async () => {
+        item.querySelector('.at-ov-run').textContent = '扫描中…';
+        const r = await apiPost('/api/autotidy/run', { id });
+        if (r.ok) toast(`移动 ${r.moved.length} 个` + (r.failed.length ? `，失败 ${r.failed.length} 个` : ''), !!r.failed.length);
+        else toast(r.error || '扫描失败', true);
+        render();
+      };
+      item.querySelector('.at-ov-edit').onclick = () => { close(); autoTidyEdit(rs); };
+      item.querySelector('.at-ov-del').onclick = async () => {
+        await apiPost('/api/autotidy/delete', { id });
+        toast('已删除');
+        render();
+      };
+    });
+  };
+  render();
+}
+
 
 // 发版向导：版本号 + 发布说明（预填 CHANGELOG 的 Unreleased 段）→ 命令序列在内嵌终端跑，每步可见可拦
 async function releasePanel() {
@@ -1642,6 +1831,7 @@ function showContextMenu(ev, e) {
   if (e.isDir) items.push({ label: '打开', fn: () => navigate(e.path) });
   else items.push({ label: '预览', fn: () => { state.selected = e.path; openPreview(e); renderFiles(); } });
   if (e.isDir) items.push({ label: 'AI 整理…', fn: () => organizeLaunch(e.path) });
+  if (e.isDir) items.push({ label: '自动整理此文件夹…', fn: () => autoTidyEdit({ source: e.path, enabled: true, intervalMin: 0, rules: [] }) });
   if (e.isDir) items.push({ label: '磁盘占用透视', fn: () => diskPanel(e.path) });
   if (e.isDir) items.push({ label: '在终端打开', fn: () => term.openInDir(e.path) });
   else items.push({ label: '在所在目录开终端', fn: () => term.openInDir(dirOf(e.path)) });
@@ -2036,6 +2226,7 @@ function bindEvents() {
   usagePanel.bind();
   shotTray.init();
   $('#skills-entry').onclick = () => skillsView.show();
+  $('#autotidy-entry').onclick = () => autoTidyOverview();
   $('#term-newtab').onclick = () => term.newTab();
   $('#term-max').onclick = () => term.toggleMax();
   // 双击终端顶栏空白处（避开标签/按钮/输入框）= 铺满终端：agent 交互窗口最重要，给它一键放到最大
@@ -2097,6 +2288,7 @@ function bindEvents() {
       { label: '新建文件…', fn: () => doCreate('file') },
       { sep: true },
       { label: 'AI 整理…', fn: () => organizeLaunch(state.cwd) },
+      { label: '自动整理此文件夹…', fn: () => autoTidyEdit({ source: state.cwd, enabled: true, intervalMin: 0, rules: [] }) },
       { label: '磁盘占用透视', fn: () => diskPanel(state.cwd) },
     ]);
   };
