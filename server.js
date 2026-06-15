@@ -917,6 +917,147 @@ async function movePath(src, dstDir) {
   return { ok: true, path: dst };
 }
 
+// ---------- 自动整理（Auto-Tidy）：定时扫描 + 规则匹配 + 直接移动 ----------
+// 与「AI 整理」互补：那个是交互式、一次性、语义判断；这个是持续、定时、确定性规则。
+// 复用 movePath（移动）和 organize-log（回滚日志），不另起文件操作 / 日志体系。
+
+// kind 条件枚举 → 后缀集合（复用文件顶部已定义的 EXT 常量）
+const AUTO_TIDY_KIND_EXT = {
+  image: IMAGE_EXT, video: VIDEO_EXT, audio: AUDIO_EXT, doc: TEXT_EXT, archive: ARCHIVE_EXT,
+};
+
+// 单文件 × 单规则匹配。命中返回 true，否则 false。非法规则一律不命中（宁可不动）。
+function autoTidyMatch(stat, name, rule) {
+  if (!rule || rule.enabled === false) return false;
+  const e = ext(name);
+  const v = rule.value;
+  switch (rule.field) {
+    case 'extension':
+      if (rule.op === 'is') return e === String(v || '').toLowerCase().replace(/^\./, '');
+      if (rule.op === 'isNot') return e !== String(v || '').toLowerCase().replace(/^\./, '');
+      return false;
+    case 'nameContains': {
+      const s = String(v || '');
+      if (!s) return false;
+      const hit = name.toLowerCase().includes(s.toLowerCase());
+      return rule.op === 'notContains' ? !hit : hit;
+    }
+    case 'olderThan': {
+      if (rule.op !== 'days') return false;
+      const d = Number(v);
+      if (!Number.isFinite(d)) return false;
+      return (Date.now() - stat.mtimeMs) >= d * 86400000;
+    }
+    case 'biggerThan': {
+      if (rule.op !== 'mb') return false;
+      const d = Number(v);
+      if (!Number.isFinite(d)) return false;
+      return stat.size >= d * 1024 * 1024;
+    }
+    case 'kind': {
+      if (rule.op !== 'is') return false;
+      const set = AUTO_TIDY_KIND_EXT[String(v)];
+      return !!(set && set.has(e));
+    }
+    default: return false;
+  }
+}
+
+// 跑一次规则集扫描：遍历源目录松散文件 → 顺序匹配 enabled 规则 → 命中即移（movePath）→ 记回滚日志。
+// 不抛异常；返回 { ok, moved, failed, skipped }。定时器与手动「立即扫描」都走这里。
+async function autoTidyRun(rulesetId) {
+  const cfg = await readConfig();
+  const rs = ((cfg.autoTidy && cfg.autoTidy.rulesets) || []).find((r) => r.id === rulesetId);
+  if (!rs) return { ok: false, error: '规则集不存在' };
+  if (!rs.enabled) return { ok: true, moved: [], failed: [], skipped: 0, reason: '已禁用' };
+  const rules = (rs.rules || []).filter((r) => r.enabled !== false);
+
+  const source = resolvePath(rs.source);
+  let entries = [];
+  try { entries = await fsp.readdir(source, { withFileTypes: true }); }
+  catch (e) { return { ok: false, error: '读源目录失败：' + (e.message || '').split('\n')[0] }; }
+
+  const moved = [], failed = [];
+  let skipped = 0;
+  for (const de of entries) {
+    if (!de.isFile()) { skipped++; continue; }          // 只动文件，目录跳过
+    if (de.name.startsWith('.')) { skipped++; continue; } // 隐藏文件跳过
+    let matched = null;
+    for (const r of rules) {
+      let st;
+      try { st = await fsp.stat(path.join(source, de.name)); } catch { st = null; }
+      if (st && autoTidyMatch(st, de.name, r)) { matched = r; break; } // 命中第一条即停
+    }
+    if (!matched) continue;
+    const target = resolvePath(matched.target);
+    // 防递归：目标若是源自身或源的子目录，跳过（避免把文件移进自己下面再被扫）
+    if (target === source || target.startsWith(source + path.sep)) { skipped++; continue; }
+    const srcAbs = path.join(source, de.name);
+    const m = await movePath(srcAbs, target);
+    if (m.ok) moved.push({ from: srcAbs, to: m.path, rule: describeRule(matched) });
+    else failed.push({ name: de.name, error: m.error });
+  }
+
+  // 有移动才写回滚日志（空跑不留垃圾日志），并更新 lastRun/lastSummary/lastLog
+  let lastLog = '';
+  if (moved.length) {
+    await fsp.mkdir(ORGANIZE_LOG_DIR, { recursive: true });
+    const ts = Date.now();
+    const fname = `${ts}.json`;
+    await fsp.writeFile(path.join(ORGANIZE_LOG_DIR, fname), JSON.stringify({
+      dir: source, at: ts, source: 'auto-tidy', ruleset: rs.name || '',
+      moves: moved,
+    }), 'utf8');
+    lastLog = fname;
+  }
+  await updateConfig((c) => {
+    const cur = (c.autoTidy && c.autoTidy.rulesets) || [];
+    const one = cur.find((r) => r.id === rulesetId);
+    if (one) { one.lastRun = Date.now(); one.lastSummary = `移动 ${moved.length} 个` + (failed.length ? `，失败 ${failed.length} 个` : ''); one.lastLog = lastLog || one.lastLog; }
+  });
+  return { ok: true, moved, failed, skipped };
+}
+
+// 撤销某规则集的最近一次执行：读 lastLog 指向的日志，逐条把 to 移回 from
+async function autoTidyUndo(rulesetId) {
+  const cfg = await readConfig();
+  const rs = ((cfg.autoTidy && cfg.autoTidy.rulesets) || []).find((r) => r.id === rulesetId);
+  if (!rs || !rs.lastLog) return { ok: false, error: '没有可撤销的执行记录' };
+  let log;
+  try { log = JSON.parse(await fsp.readFile(path.join(ORGANIZE_LOG_DIR, rs.lastLog), 'utf8')); }
+  catch { return { ok: false, error: '回滚日志已丢失' }; }
+  const restored = [], failed = [];
+  for (const mv of (log.moves || [])) {
+    if (!fs.existsSync(mv.to)) { failed.push({ name: path.basename(mv.to), error: '文件已不在目标位置' }); continue; }
+    // from 被占用了跳过（不覆盖），记进 failed 说明
+    if (fs.existsSync(mv.from)) { failed.push({ name: path.basename(mv.from), error: '原位置已被占用' }); continue; }
+    try { await fsp.rename(mv.to, mv.from); restored.push({ from: mv.to, to: mv.from }); }
+    catch (e) {
+      if (e.code === 'EXDEV') { await fsp.copyFile(mv.to, mv.from); await fsp.unlink(mv.to); restored.push({ from: mv.to, to: mv.from }); }
+      else failed.push({ name: path.basename(mv.to), error: e.message });
+    }
+  }
+  // 清掉 lastLog，避免重复撤销
+  await updateConfig((c) => {
+    const one = (c.autoTidy && c.autoTidy.rulesets || []).find((r) => r.id === rulesetId);
+    if (one) one.lastLog = '';
+  });
+  return { ok: true, restored, failed };
+}
+
+// 规则的人类可读描述（写进日志 rule 字段，方便回看）
+function describeRule(r) {
+  const v = r.value;
+  switch (r.field) {
+    case 'extension': return `后缀 ${r.op === 'isNot' ? '≠' : '='} ${v}`;
+    case 'nameContains': return `名称${r.op === 'notContains' ? '不含' : '含'}「${v}」`;
+    case 'olderThan': return `早于 ${v} 天`;
+    case 'biggerThan': return `大于 ${v} MB`;
+    case 'kind': return `类型 ${v}`;
+    default: return '规则';
+  }
+}
+
 async function createEntry(parentPath, name, type) {
   const parent = resolvePath(parentPath);
   name = (name || '').trim();
@@ -2092,6 +2233,67 @@ const server = http.createServer(async (req, res) => {
       }
       const cfg = await readConfig();
       return sendJSON(res, 200, { favorites: cfg.favorites || [], recentOpened: cfg.recentOpened || [] });
+    }
+
+    // ---------- 自动整理（Auto-Tidy）端点 ----------
+    if (p.startsWith('/api/autotidy/')) {
+      const action = p.slice('/api/autotidy/'.length);
+      // 列出全部规则集（供总览 modal）
+      if (action === 'list' && req.method === 'GET') {
+        const cfg = await readConfig();
+        return sendJSON(res, 200, { rulesets: (cfg.autoTidy && cfg.autoTidy.rulesets) || [] });
+      }
+      // 保存（新建或更新整个规则集）。前端每次「保存」把完整规则集 POST 回来。
+      if (action === 'save' && req.method === 'POST') {
+        const b = await readBody(req);
+        if (!b || !b.name || !b.source) return sendJSON(res, 200, { ok: false, error: '名称和源目录必填' });
+        const cfg = await updateConfig((c) => {
+          if (!c.autoTidy) c.autoTidy = { rulesets: [] };
+          if (!c.autoTidy.rulesets) c.autoTidy.rulesets = [];
+          const id = b.id || ('rs_' + Date.now());
+          const one = c.autoTidy.rulesets.find((r) => r.id === id);
+          const cleaned = {
+            id,
+            name: String(b.name).trim(),
+            source: b.source,
+            enabled: b.enabled !== false,
+            intervalMin: Math.max(0, Number(b.intervalMin) || 0),
+            rules: (b.rules || []).map((r, i) => ({
+              id: r.id || ('r_' + (i + 1)),
+              enabled: r.enabled !== false,
+              field: r.field, op: r.op, value: r.value, target: r.target,
+            })).filter((r) => r.field && r.op && r.target),
+          };
+          if (one) Object.assign(one, cleaned);
+          else c.autoTidy.rulesets.push(cleaned);
+        });
+        const saved = (cfg.autoTidy.rulesets || []).slice(-1)[0];
+        return sendJSON(res, 200, { ok: true, ruleset: saved, rulesets: cfg.autoTidy.rulesets });
+      }
+      // 删除规则集
+      if (action === 'delete' && req.method === 'POST') {
+        const b = await readBody(req);
+        const cfg = await updateConfig((c) => {
+          if (c.autoTidy && c.autoTidy.rulesets) {
+            c.autoTidy.rulesets = c.autoTidy.rulesets.filter((r) => r.id !== b.id);
+          }
+        });
+        return sendJSON(res, 200, { ok: true, rulesets: (cfg.autoTidy && cfg.autoTidy.rulesets) || [] });
+      }
+      // 立即扫描一次（手动触发，不依赖定时器）
+      if (action === 'run' && req.method === 'POST') {
+        const b = await readBody(req);
+        const r = await autoTidyRun(b.id);
+        const cfg = await readConfig();
+        r.ruleset = (cfg.autoTidy && cfg.autoTidy.rulesets || []).find((x) => x.id === b.id);
+        return sendJSON(res, 200, r);
+      }
+      // 撤销最近一次执行
+      if (action === 'undo' && req.method === 'POST') {
+        const b = await readBody(req);
+        return sendJSON(res, 200, await autoTidyUndo(b.id));
+      }
+      return sendJSON(res, 200, { ok: false, error: '未知操作' });
     }
 
     // 静态资源
