@@ -2569,15 +2569,48 @@ async function exportReplay(p) {
   // 选 WebGL 渲染那块画布（另一块 xterm-link-layer 是空覆盖层）。WebGL 不保留 drawing buffer，
   // 必须用 captureStream(fps) 的「自动模式」在合成器层面取帧——手动 requestFrame 取到的是空白。
   const canvases = [...p._host.querySelectorAll('canvas')];
-  const canvas = canvases.find((c) => { try { return !!(c.getContext('webgl2') || c.getContext('webgl')); } catch { return false; } }) || canvases[canvases.length - 1];
-  if (!canvas) { toast('找不到画布，无法导出', true); return; }
+  const srcCanvas = canvases.find((c) => { try { return !!(c.getContext('webgl2') || c.getContext('webgl')); } catch { return false; } }) || canvases[canvases.length - 1];
+  if (!srcCanvas || !srcCanvas.width || !srcCanvas.height) { toast('找不到画布，无法导出', true); return; }
+  const cw = srcCanvas.width, ch = srcCanvas.height;
+  // WebGL 画布不能直接 drawImage（读回是空白），先 captureStream 喂给 <video>，再画进带 macOS 外框的合成画布
+  let srcStream;
+  try { srcStream = srcCanvas.captureStream(30); } catch { toast('画布捕获失败', true); return; }
+  const video = document.createElement('video');
+  video.muted = true; video.playsInline = true; video.srcObject = srcStream;
+  // 外框几何（设备像素，按宽度等比缩放），配色取录像当时的皮肤
+  const s = Math.max(0.6, cw / 900);
+  const titleH = Math.round(40 * s), pad = Math.round(44 * s), radius = Math.round(11 * s);
+  const comp = document.createElement('canvas');
+  comp.width = cw + pad * 2; comp.height = ch + titleH + pad * 2;
+  const ctx = comp.getContext('2d');
+  const theme = term.themes[p.recTheme] || term.theme();
+  const termBg = theme.background || '#0b0c0a', fg = theme.foreground || '#cccccc';
+  const lightTheme = hexLum(termBg) > 0.5;
+  const backdrop = lightTheme ? '#d6d0c4' : '#16181c';
+  const title = (p.current && p.current.cwd && baseOf(p.current.cwd)) || '终端录像';
+  const fontFam = getComputedStyle(document.documentElement).getPropertyValue('--font-display').trim() || 'sans-serif';
+  const rr = (x, y, w, h, r) => { ctx.beginPath(); ctx.moveTo(x + r, y); ctx.arcTo(x + w, y, x + w, y + h, r); ctx.arcTo(x + w, y + h, x, y + h, r); ctx.arcTo(x, y + h, x, y, r); ctx.arcTo(x, y, x + w, y, r); ctx.closePath(); };
+  const drawFrame = () => {
+    ctx.fillStyle = backdrop; ctx.fillRect(0, 0, comp.width, comp.height);
+    ctx.save(); ctx.shadowColor = 'rgba(0,0,0,0.30)'; ctx.shadowBlur = 30 * s; ctx.shadowOffsetY = 12 * s;
+    ctx.fillStyle = termBg; rr(pad, pad, cw, titleH + ch, radius); ctx.fill(); ctx.restore();
+    ctx.save(); rr(pad, pad, cw, titleH + ch, radius); ctx.clip();
+    ctx.fillStyle = lightTheme ? 'rgba(0,0,0,0.05)' : 'rgba(255,255,255,0.06)'; ctx.fillRect(pad, pad, cw, titleH);
+    const ly = pad + titleH / 2, lr = Math.round(6 * s); let lx = pad + Math.round(22 * s);
+    for (const col of ['#ff5f57', '#febc2e', '#28c840']) { ctx.beginPath(); ctx.fillStyle = col; ctx.arc(lx, ly, lr, 0, Math.PI * 2); ctx.fill(); lx += Math.round(20 * s); }
+    ctx.fillStyle = fg; ctx.globalAlpha = 0.68; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    ctx.font = `${Math.round(15 * s)}px ${fontFam}`; ctx.fillText(title, pad + cw / 2, ly + 1); ctx.globalAlpha = 1;
+    try { ctx.drawImage(video, pad, pad + titleH, cw, ch); } catch { /* video 尚无帧 */ }
+    ctx.restore();
+  };
+  let framePump = 0; const pump = () => { drawFrame(); framePump = requestAnimationFrame(pump); };
   let stream;
-  try { stream = canvas.captureStream(30); } catch { toast('画布捕获失败', true); return; }
+  try { stream = comp.captureStream(30); } catch { toast('合成画布捕获失败', true); return; }
   // 渲染层固定录 WebM（Electron 的 MediaRecorder 最稳的就是 vp9/webm），mp4/gif 交给主进程 ffmpeg 转
   const mime = ['video/webm;codecs=vp9', 'video/webm'].find((m) => MediaRecorder.isTypeSupported(m)) || 'video/webm';
   const chunks = [];
   let mr;
-  try { mr = new MediaRecorder(stream, { mimeType: mime, videoBitsPerSecond: 8000000 }); }
+  try { mr = new MediaRecorder(stream, { mimeType: mime, videoBitsPerSecond: 10000000 }); }
   catch { toast('无法初始化录制器', true); return; }
   mr.ondataavailable = (e) => { if (e.data && e.data.size) chunks.push(e.data); };
   const stopped = new Promise((res) => { mr.onstop = res; });
@@ -2586,7 +2619,9 @@ async function exportReplay(p) {
   btn.disabled = true;
   try {
     p.pause(); p.seekTo(0);
+    try { await video.play(); } catch { /* */ }
     await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r))); // 等画布稳定
+    pump(); // 开始把 video 画进外框
     mr.start(100); // timeslice：周期性产出数据块，短录像也不丢
     p.play();
     // 导出是实时录屏（播一遍就是多久），进度条给用户反馈，别让人以为卡死
@@ -2596,7 +2631,9 @@ async function exportReplay(p) {
     await new Promise((r) => setTimeout(r, 500)); // 末帧多停一拍
     try { mr.stop(); } catch { /* */ }
     await stopped;
-    try { stream.getTracks().forEach((t) => t.stop()); } catch { /* */ }
+    cancelAnimationFrame(framePump);
+    try { stream.getTracks().forEach((t) => t.stop()); srcStream.getTracks().forEach((t) => t.stop()); } catch { /* */ }
+    try { video.pause(); video.srcObject = null; } catch { /* */ }
     if (!chunks.length) { toast('没有捕获到画面（导出需要 WebGL）', true); return; }
     const fmt = ($('#rp-format') && $('#rp-format').value) || 'mp4';
     btn.textContent = fmt === 'webm' ? '保存中…' : '转码中…';
@@ -2609,8 +2646,18 @@ async function exportReplay(p) {
     if (r && r.ok) { toast('已导出 ' + baseOf(r.path) + (r.fellBack ? '（' + r.fellBack + '）' : '') + '，在访达打开'); window.fanboxRec.reveal(r.path); }
     else { toast('导出失败' + (r && r.error ? '：' + r.error : ''), true); }
   } finally {
+    try { cancelAnimationFrame(framePump); } catch { /* */ }
+    try { stream.getTracks().forEach((t) => t.stop()); srcStream.getTracks().forEach((t) => t.stop()); } catch { /* */ }
+    try { video.pause(); video.srcObject = null; } catch { /* */ }
     p._exporting = false; btn.disabled = false; btn.textContent = label;
   }
+}
+// 简易相对亮度（判断皮肤深浅，给外框选底色）
+function hexLum(hex) {
+  const m = /^#?([0-9a-f]{6})$/i.exec(String(hex || '').trim());
+  if (!m) return 0.2;
+  const n = parseInt(m[1], 16);
+  return (0.299 * ((n >> 16) & 255) + 0.587 * ((n >> 8) & 255) + 0.114 * (n & 255)) / 255;
 }
 function fmtStamp() {
   const d = new Date();
