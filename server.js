@@ -1058,6 +1058,37 @@ function describeRule(r) {
   }
 }
 
+// 定时器调度：放 server 侧（双入口通用——Electron 与浏览器直跑都生效）。
+// server 启动时调一次；规则集 save/delete 后再调一次重排。
+// 不依赖 IPC，不依赖本地 HTTP 自调用，直接复用同进程的 autoTidyRun。
+const autoTidyTimers = new Map(); // rulesetId -> { handle, ms }
+function rescheduleAutoTidy() {
+  readConfig().then((cfg) => {
+    const sets = (cfg.autoTidy && cfg.autoTidy.rulesets) || [];
+    const live = new Set();
+    for (const rs of sets) {
+      const ms = (Number(rs.intervalMin) || 0) * 60000;
+      live.add(rs.id);
+      const cur = autoTidyTimers.get(rs.id);
+      // 禁用 / 间隔为 0 / 没源目录：停掉
+      if (!rs.enabled || ms <= 0 || !rs.source) {
+        if (cur) { clearInterval(cur.handle); autoTidyTimers.delete(rs.id); }
+        continue;
+      }
+      // 已有定时器且间隔没变：不重建（避免每次小改都重置倒计时）
+      if (cur && cur.ms === ms) continue;
+      if (cur) clearInterval(cur.handle);
+      const handle = setInterval(() => { autoTidyRun(rs.id).catch(() => {}); }, ms);
+      if (typeof handle.unref === 'function') handle.unref(); // 不阻止进程退出
+      autoTidyTimers.set(rs.id, { handle, ms });
+    }
+    // 清掉已删除规则集的定时器
+    for (const [id, t] of autoTidyTimers) {
+      if (!live.has(id)) { clearInterval(t.handle); autoTidyTimers.delete(id); }
+    }
+  }).catch(() => { /* config 读失败不致命 */ });
+}
+
 async function createEntry(parentPath, name, type) {
   const parent = resolvePath(parentPath);
   name = (name || '').trim();
@@ -2268,6 +2299,7 @@ const server = http.createServer(async (req, res) => {
           else c.autoTidy.rulesets.push(cleaned);
         });
         const saved = (cfg.autoTidy.rulesets || []).slice(-1)[0];
+        rescheduleAutoTidy(); // 间隔/启停可能变了，重排定时器
         return sendJSON(res, 200, { ok: true, ruleset: saved, rulesets: cfg.autoTidy.rulesets });
       }
       // 删除规则集
@@ -2278,6 +2310,7 @@ const server = http.createServer(async (req, res) => {
             c.autoTidy.rulesets = c.autoTidy.rulesets.filter((r) => r.id !== b.id);
           }
         });
+        rescheduleAutoTidy(); // 清掉被删规则集的定时器
         return sendJSON(res, 200, { ok: true, rulesets: (cfg.autoTidy && cfg.autoTidy.rulesets) || [] });
       }
       // 立即扫描一次（手动触发，不依赖定时器）
@@ -2351,6 +2384,7 @@ server.listen(PORT, '127.0.0.1', () => {
   console.log('  🏠  根目录:', HOME);
   console.log('\n  按 Ctrl+C 退出\n');
   pruneThumbs().catch(() => {}); // 启动时裁剪缩略图缓存，防止无限增长
+  rescheduleAutoTidy(); // 启动时按 config 恢复自动整理定时器
   if (!process.env.FANBOX_NO_OPEN) {
     const opener = PLATFORM === 'darwin' ? 'open' : PLATFORM === 'win32' ? 'start' : 'xdg-open';
     exec(`${opener} ${link}`, () => {});
