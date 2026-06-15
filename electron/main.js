@@ -81,6 +81,9 @@ app.whenReady().then(() => {
   // 后端跑在 localhost，访问它永不该走代理。个别环境（clash 强制系统代理、企业 PAC 把 loopback 也代理）
   // 会把本地请求拦成 502 → 整个界面白屏。给 loopback 显式加旁路；其余（如查更新走 GitHub）仍按系统代理，互不影响。
   session.defaultSession.setProxy({ mode: 'system', proxyBypassRules: 'localhost;127.0.0.1;[::1]' }).catch(() => { /* 设置失败就退回默认行为，不影响启动 */ });
+  // 合盖继续运行：恢复上次的开关意图；启动时把残留的禁休眠清掉（防上次崩溃没恢复），有终端跑起来再按需重新生效
+  lidIntent = !!readConfig().lidStayAwake;
+  if (process.platform === 'darwin') trySetDisableSleep(false);
   buildMenu();
   createWindow();
   startShotWatch();
@@ -221,6 +224,88 @@ function uiLang() {
 }
 const M = (zh, en) => (uiLang() === 'zh' ? zh : en);
 
+// ---------- 合盖继续运行（禁用合盖休眠）----------
+// macOS 的「合盖休眠」是独立机制，caffeinate / powerSaveBlocker 这类 power assertion 都挡不住，
+// 唯一手段是 `pmset -a disablesleep 1`（需 root）。为避免智能模式反复弹密码，首次开启时装一条
+// 仅限 pmset disablesleep 0/1 的 sudoers 免密规则，之后静默切换。
+// 智能模式：只有「开关开 且 有终端在跑」才真正禁休眠；终端全退/退出 app 立即恢复，绝不让 Mac 一直不睡。
+const CONFIG = path.join(os.homedir(), '.fanbox', 'config.json');
+function readConfig() { try { return JSON.parse(fs.readFileSync(CONFIG, 'utf8')); } catch { return {}; } }
+function writeConfig(patch) {
+  try { const c = readConfig(); Object.assign(c, patch); fs.mkdirSync(path.dirname(CONFIG), { recursive: true }); fs.writeFileSync(CONFIG, JSON.stringify(c, null, 2)); }
+  catch { /* 写失败不致命，下次再写 */ }
+}
+let lidIntent = false; // 用户意图（菜单勾选），跨会话持久
+let lidActive = false; // 当前是否已对系统下达禁休眠
+
+// 用 sudo -n（非交互）切换；sudoers 没装好就直接失败、绝不在后台弹密码
+function trySetDisableSleep(on) {
+  if (process.platform !== 'darwin') return false;
+  try { require('child_process').execFileSync('/usr/bin/sudo', ['-n', 'pmset', '-a', 'disablesleep', on ? '1' : '0']); return true; }
+  catch { return false; }
+}
+
+// 首次开启时弹一次系统管理员框，装仅限本用户、仅限 pmset disablesleep 0/1 的免密规则
+function installSudoers() {
+  return new Promise((resolve) => {
+    const user = (os.userInfo().username || '').replace(/[^a-zA-Z0-9._-]/g, '');
+    if (!user) return resolve(false);
+    const sh = [
+      '#!/bin/sh', 'set -e',
+      'f=/etc/sudoers.d/fanbox-pmset',
+      "cat > \"$f\" <<'EOF'",
+      `${user} ALL=(root) NOPASSWD: /usr/bin/pmset -a disablesleep 0, /usr/bin/pmset -a disablesleep 1`,
+      'EOF',
+      'chown root:wheel "$f"',
+      'chmod 440 "$f"',
+      '/usr/sbin/visudo -cf "$f" || { rm -f "$f"; exit 1; }',
+      '',
+    ].join('\n');
+    let tmp;
+    try { tmp = path.join(app.getPath('temp'), 'fanbox-sudoers-install.sh'); fs.writeFileSync(tmp, sh, { mode: 0o700 }); }
+    catch { return resolve(false); }
+    const apple = `do shell script "/bin/sh " & quoted form of "${tmp}" with administrator privileges`;
+    require('child_process').execFile('/usr/bin/osascript', ['-e', apple], (err) => {
+      try { fs.unlinkSync(tmp); } catch { /* */ }
+      resolve(!err); // 用户取消 → err（-128）→ false
+    });
+  });
+}
+
+// 按「意图 × 终端数」结算系统状态，幂等。终端起落、开关变化都调它。
+function refreshLidGuard() {
+  if (process.platform !== 'darwin') return;
+  const want = lidIntent && terminals.size > 0;
+  if (want === lidActive) return;
+  const ok = trySetDisableSleep(want);
+  if (want && !ok) { lidIntent = false; writeConfig({ lidStayAwake: false }); } // 免密规则丢了，退回关闭
+  lidActive = want && ok;
+  buildMenu();
+}
+
+// 菜单勾选/取消的入口
+async function setLidIntent(on) {
+  if (process.platform !== 'darwin') return;
+  if (on) {
+    const choice = dialog.showMessageBoxSync(win && !win.isDestroyed() ? win : undefined, {
+      type: 'warning', buttons: [M('开启', 'Enable'), M('取消', 'Cancel')], defaultId: 0, cancelId: 1,
+      message: M('合盖后继续运行', 'Keep running with lid closed'),
+      detail: M('开启后，只要还有终端会话在跑，合上盖子也不会休眠——agent 任务能接着干。\n\n注意：合盖期间持续耗电发热，建议接电源。终端全部退出或退出翻箱时自动恢复正常休眠。\n\n首次开启需输入一次管理员密码（装一条仅限电源设置的免密规则）。',
+        'While any terminal session is running, closing the lid won\'t sleep the Mac — your agent tasks keep going.\n\nNote: it keeps drawing power and heat while closed; stay plugged in. Normal sleep is restored once all terminals exit or you quit FanBox.\n\nFirst time needs your admin password once (installs a power-only passwordless rule).'),
+    });
+    if (choice !== 0) { buildMenu(); return; } // 取消 → 复位勾选
+    // 探针：能否免密 sudo（设 0 无害）。不行就装规则。
+    if (!trySetDisableSleep(false)) {
+      const installed = await installSudoers();
+      if (!installed) { buildMenu(); return; } // 装失败/取消 → 保持关闭
+    }
+  }
+  lidIntent = on;
+  writeConfig({ lidStayAwake: on });
+  refreshLidGuard();
+  buildMenu();
+}
+
 // 原生菜单——关键是 Edit role，终端里的 ⌘C/⌘V 才生效
 function buildMenu() {
   const isMac = process.platform === 'darwin';
@@ -246,6 +331,12 @@ function buildMenu() {
       { role: 'reload', label: M('重新加载', 'Reload') }, { role: 'toggleDevTools', label: M('开发者工具', 'Developer Tools') },
       { type: 'separator' }, { role: 'resetZoom' }, { role: 'zoomIn' }, { role: 'zoomOut' },
       { type: 'separator' }, { role: 'togglefullscreen', label: M('全屏', 'Full Screen') },
+      ...(isMac ? [{ type: 'separator' }, {
+        // 合盖后继续运行：仅在有终端跑着时真正生效（智能模式）；勾选状态反映用户意图
+        label: lidActive ? M('合盖后继续运行（生效中）', 'Keep running with lid closed (active)') : M('合盖后继续运行', 'Keep running with lid closed'),
+        type: 'checkbox', checked: lidIntent,
+        click: (item) => { setLidIntent(item.checked); },
+      }] : []),
     ] },
     { role: 'window', label: M('窗口', 'Window'), submenu: [{ role: 'minimize', label: M('最小化', 'Minimize') }, { role: 'zoom' }] },
   ];
@@ -270,11 +361,73 @@ app.on('before-quit', (e) => {
 app.on('window-all-closed', () => {
   terminals.forEach((p) => { try { p.kill(); } catch { /* */ } });
   terminals.clear();
+  if (lidActive) { trySetDisableSleep(false); lidActive = false; } // 终端没了，别让 Mac 一直不睡
+  recorders.forEach((r) => { try { r.stream.end(); } catch { /* */ } }); // 收尾刷盘，别丢最后几行
+  recorders.clear();
   if (process.platform !== 'darwin') app.quit();
 });
+// 退出兜底：无论怎么退（⌘Q、崩溃前的正常退出），都恢复系统休眠，绝不留禁休眠的烂摊子
+app.on('will-quit', () => { if (process.platform === 'darwin') trySetDisableSleep(false); });
+
+// ---------- 终端录制（黑匣子）：把 PTY 字节流旁路成 asciinema v2 .cast ----------
+// 设计铁律：录制器是一根哑管子——只异步旁路字节，全程 try/catch，写失败就静默自废，
+// 绝不把异常抛回 PTY 数据通路。所有「聪明」（压缩/变速/导出）都推迟到回放层做。
+const recorders = new Map(); // id -> { stream, start, path }
+const REC_DIR = () => path.join(app.getPath('userData'), 'recordings');
+function recEnabled() { return process.env.FANBOX_NO_RECORD !== '1'; }
+// 常开录制不能让磁盘无限涨：保留最近 60 个 / 总量 800MB，超了从最旧删起（正在录的跳过）
+function recPrune() {
+  try {
+    const dir = REC_DIR();
+    if (!fs.existsSync(dir)) return;
+    const live = new Set([...recorders.values()].map((r) => r.path));
+    const files = fs.readdirSync(dir).filter((n) => n.endsWith('.cast'))
+      .map((n) => path.join(dir, n)).filter((f) => !live.has(f))
+      .map((f) => { try { return { f, st: fs.statSync(f) }; } catch { return null; } }).filter(Boolean)
+      .sort((a, b) => a.st.mtimeMs - b.st.mtimeMs); // 旧→新
+    const MAX_FILES = 60, MAX_BYTES = 800 * 1024 * 1024;
+    let total = files.reduce((s, x) => s + x.st.size, 0), count = files.length;
+    for (const x of files) {
+      if (count <= MAX_FILES && total <= MAX_BYTES) break;
+      try { fs.rmSync(x.f, { force: true }); total -= x.st.size; count--; } catch { /* */ }
+    }
+  } catch { /* */ }
+}
+function recStart(id, { cols, rows, cwd, theme }) {
+  if (!recEnabled()) return;
+  try {
+    const dir = REC_DIR();
+    fs.mkdirSync(dir, { recursive: true });
+    recPrune();
+    const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+    const file = path.join(dir, `${stamp}-${id}.cast`);
+    const stream = fs.createWriteStream(file, { flags: 'a' });
+    stream.on('error', () => { try { recorders.delete(id); } catch { /* */ } }); // 盘满/权限等：自废，不连累终端
+    const header = {
+      version: 2, width: cols || 80, height: rows || 24,
+      timestamp: Math.floor(Date.now() / 1000), env: { TERM: 'xterm-256color' },
+      // fanbox 私有元信息：回放/列表用，asciinema 标准解析器会忽略未知字段
+      fanbox: { cwd: cwd || '', cols: cols || 80, rows: rows || 24, startedAt: Date.now(), theme: theme || '' },
+    };
+    stream.write(JSON.stringify(header) + '\n');
+    recorders.set(id, { stream, start: Date.now(), path: file });
+  } catch { /* 录制失败静默自废 */ }
+}
+function recEvent(id, code, data) {
+  const r = recorders.get(id);
+  if (!r) return;
+  try { r.stream.write(JSON.stringify([(Date.now() - r.start) / 1000, code, data]) + '\n'); }
+  catch { /* */ }
+}
+function recStop(id) {
+  const r = recorders.get(id);
+  if (!r) return;
+  recorders.delete(id);
+  try { r.stream.end(); } catch { /* */ }
+}
 
 // ---------- 终端 IPC（node-pty）----------
-ipcMain.handle('pty:spawn', (e, { id, cwd, cols, rows }) => {
+ipcMain.handle('pty:spawn', (e, { id, cwd, cols, rows, theme }) => {
   if (!pty) return { ok: false, error: 'node-pty 未编译，跑：npm run rebuild' };
   const shellPath = process.env.SHELL || (process.platform === 'win32' ? 'powershell.exe' : '/bin/zsh');
   const startCwd = cwd && fs.existsSync(cwd) ? cwd : os.homedir();
@@ -296,9 +449,13 @@ ipcMain.handle('pty:spawn', (e, { id, cwd, cols, rows }) => {
     });
   } catch (err) { return { ok: false, error: err.message }; }
   terminals.set(id, p);
-  p.onData((data) => { if (win && !win.isDestroyed()) win.webContents.send('pty:data', { id, data }); });
+  refreshLidGuard(); // 开关开着时，第一个终端起来即生效
+  recStart(id, { cols, rows, cwd: startCwd, theme });
+  p.onData((data) => { if (win && !win.isDestroyed()) win.webContents.send('pty:data', { id, data }); recEvent(id, 'o', data); });
   p.onExit(({ exitCode }) => {
     terminals.delete(id);
+    refreshLidGuard(); // 最后一个终端退出即恢复休眠
+    recStop(id);
     if (win && !win.isDestroyed()) win.webContents.send('pty:exit', { id, exitCode });
   });
   return { ok: true, cwd: startCwd };
@@ -355,9 +512,85 @@ ipcMain.handle('drop:copy-into', (e, { srcPath, dir }) => {
   } catch (err) { return { ok: false, error: err.message }; }
 });
 
-ipcMain.on('pty:input', (e, { id, data }) => { const p = terminals.get(id); if (p) p.write(data); });
-ipcMain.on('pty:resize', (e, { id, cols, rows }) => { const p = terminals.get(id); if (p) { try { p.resize(cols, rows); } catch { /* */ } } });
-ipcMain.on('pty:kill', (e, { id }) => { const p = terminals.get(id); if (p) { try { p.kill(); } catch { /* */ } terminals.delete(id); } });
+ipcMain.on('pty:input', (e, { id, data }) => { const p = terminals.get(id); if (p) { p.write(data); recEvent(id, 'i', data); } });
+ipcMain.on('pty:resize', (e, { id, cols, rows }) => { const p = terminals.get(id); if (p) { try { p.resize(cols, rows); } catch { /* */ } recEvent(id, 'r', `${cols}x${rows}`); } });
+ipcMain.on('pty:kill', (e, { id }) => { const p = terminals.get(id); if (p) { try { p.kill(); } catch { /* */ } terminals.delete(id); refreshLidGuard(); recStop(id); } });
+
+// ---------- 录制文件管理 IPC ----------
+// 列表：读每个 .cast 的头行拿元信息 + 文件大小/时长（末事件时间），按新→旧。失败的文件跳过不报错。
+ipcMain.handle('rec:list', () => {
+  try {
+    const dir = REC_DIR();
+    if (!fs.existsSync(dir)) return { ok: true, items: [] };
+    const live = new Set([...recorders.values()].map((r) => r.path));
+    const items = [];
+    for (const name of fs.readdirSync(dir)) {
+      if (!name.endsWith('.cast')) continue;
+      const full = path.join(dir, name);
+      try {
+        const st = fs.statSync(full);
+        if (!st.isFile()) continue;
+        // 「打开但没干活」的空终端会留下几百字节的壳（提示符+括号粘贴开关），是噪音：
+        // 非正在录且体量过小的直接不进列表，省得满屏空录像
+        if (st.size < 700 && !live.has(full)) continue;
+        const head = readFirstLine(full);
+        const meta = head ? JSON.parse(head) : {};
+        items.push({
+          name, path: full, size: st.size, mtime: st.mtimeMs,
+          width: meta.width || 80, height: meta.height || 24,
+          cwd: (meta.fanbox && meta.fanbox.cwd) || '',
+          startedAt: (meta.fanbox && meta.fanbox.startedAt) || (meta.timestamp ? meta.timestamp * 1000 : st.birthtimeMs),
+          recording: live.has(full), // 还在录的会话
+        });
+      } catch { /* 损坏的文件跳过 */ }
+    }
+    items.sort((a, b) => b.startedAt - a.startedAt);
+    return { ok: true, items };
+  } catch (err) { return { ok: false, error: err.message, items: [] }; }
+});
+ipcMain.handle('rec:read', (e, { path: p }) => {
+  try {
+    if (!isInRecDir(p)) return { ok: false, error: '非录制目录' };
+    return { ok: true, text: fs.readFileSync(p, 'utf8') };
+  } catch (err) { return { ok: false, error: err.message }; }
+});
+ipcMain.handle('rec:delete', (e, { path: p }) => {
+  try {
+    if (!isInRecDir(p)) return { ok: false, error: '非录制目录' };
+    fs.rmSync(p, { force: true });
+    return { ok: true };
+  } catch (err) { return { ok: false, error: err.message }; }
+});
+ipcMain.handle('rec:reveal', (e, { path: p }) => {
+  try { shell.showItemInFolder(isInRecDir(p) ? p : REC_DIR()); return { ok: true }; }
+  catch (err) { return { ok: false, error: err.message }; }
+});
+// 把导出好的视频/GIF 字节落进录制目录旁，返回真实路径供「在访达显示」
+ipcMain.handle('rec:save-export', (e, { name, buf }) => {
+  try {
+    const dir = path.join(REC_DIR(), 'exports');
+    fs.mkdirSync(dir, { recursive: true });
+    const safe = String(name || 'export.webm').replace(/[/\\:]/g, '_');
+    const dest = uniqueDest(path.join(dir, safe));
+    fs.writeFileSync(dest, Buffer.from(buf));
+    return { ok: true, path: dest };
+  } catch (err) { return { ok: false, error: err.message }; }
+});
+function isInRecDir(p) {
+  try { const r = path.resolve(REC_DIR()); return p && path.resolve(p).startsWith(r + path.sep); }
+  catch { return false; }
+}
+// 只读文件头一行（.cast 头），不把整个大文件读进内存
+function readFirstLine(file) {
+  const fd = fs.openSync(file, 'r');
+  try {
+    const buf = Buffer.alloc(8192);
+    const n = fs.readSync(fd, buf, 0, buf.length, 0);
+    const s = buf.slice(0, n).toString('utf8');
+    const nl = s.indexOf('\n');
+    return nl >= 0 ? s.slice(0, nl) : s;
+  } finally { fs.closeSync(fd); }
+}
 
 // lsof 在非 UTF-8 locale 下会把中文路径按字节转义成 \xe8 字面量（GUI 启动的 app 不继承 shell 的 locale，
 // 正中这个坑：标签标题乱码、双击定位失效）。调 lsof 时显式给 UTF-8 locale，这里再留一层 \xNN 解码兜底
