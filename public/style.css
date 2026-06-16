@@ -1250,7 +1250,17 @@ body { transition: background-color 0.28s ease, color 0.28s ease; }
 /* ---------- 自动整理（Auto-Tidy）---------- */
 .at-dialog { width: 640px; max-width: 94vw; }
 .at-form label { display: block; font-size: 12px; color: var(--text-dim); margin-bottom: 8px; }
-.at-form label input[type="text"], .at-form label input[type="number"] { width: 100%; margin-top: 3px; }
+/* 名称/源文件夹/扫描间隔等表单输入：去掉浏览器默认黑边，用与对话框背景协调的浅底+柔边 */
+.at-form label input[type="text"], .at-form label input[type="number"] {
+  width: 100%; margin-top: 3px; padding: 5px 8px; font-size: 13px; font-family: inherit;
+  background: var(--bg-1, var(--bg-3)); border: 1px solid var(--border); border-radius: 6px; color: var(--text);
+  transition: border-color 0.15s, box-shadow 0.15s;
+}
+.at-form label input[type="text"]:focus, .at-form label input[type="number"]:focus {
+  border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); outline: none;
+}
+/* 扫描间隔带「分钟」后缀文字，宽度收窄不占满 */
+.at-form label input.at-interval { width: 92px; }
 .at-form .at-en { display: inline-block; }
 .at-rules-head { font-size: 12px; color: var(--text-dim); margin: 12px 0 6px; }
 .at-rules { display: flex; flex-direction: column; gap: 6px; max-height: 38vh; overflow-y: auto; padding-right: 2px; }
