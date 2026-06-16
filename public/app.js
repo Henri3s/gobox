@@ -84,6 +84,24 @@ function iconColorFor(e) {
     if (e.kind === 'data' || ['csv', 'tsv'].includes(ex)) return '#00a33e';
     return '#0a0a0a';
   }
+  // macos：贴 Finder 风格——标志性蓝色文件夹 + 克制柔和的系统色文件图标，不抢界面
+  if (t === "macos") {
+    if (e.isDir) return "#3b82f6";                         // macOS 文件夹蓝
+    if (["md","markdown","txt"].includes(ex)) return "#8e8e93";  // 文本：中性灰
+    if (["html","htm","vue"].includes(ex)) return "#e87b5b";     // 网页：暖橙
+    if (["css","scss","less"].includes(ex)) return "#5b9ae8";     // 样式：蓝
+    if (["js","mjs","cjs","jsx"].includes(ex)) return "#e8c95b";  // JS：黄
+    if (["ts","tsx"].includes(ex)) return "#5b9ae8";             // TS：蓝
+    if (["json","json5","yml","yaml","toml","ini","env"].includes(ex)) return "#9aa08a"; // 配置：橄榄灰
+    if (["py"].includes(ex)) return "#5b90c9";                  // Python：蓝
+    if (["pdf"].includes(ex)) return "#e85b5b";                 // PDF：红
+    if (["zip","rar","7z","gz","tar"].includes(ex)) return "#a1a1a6"; // 压缩：灰
+    if (["csv","tsv","sql"].includes(ex)) return "#34c759";     // 数据：系统绿
+    if (e.kind === "image") return "#34c759";                   // 图片：绿
+    if (e.kind === "video") return "#af52de";                   // 视频：紫
+    if (e.kind === "audio") return "#ff2d55";                   // 音频：粉红
+    return "#8e8e93";                                            // 兜底：中性灰
+  }
   // terminal：暖色多彩，文件夹用中性灰绿不抢 volt
   if (e.isDir) return '#9aa08a';
   if (EXT_KIND[ex]) return EXT_KIND[ex][1];
@@ -2381,11 +2399,50 @@ function updateGridSizeVisibility() {
   $('#gridsize-seg').style.display = state.view === 'grid' ? '' : 'none';
 }
 
+// 系统皮肤专用：把系统强调色注入 --accent 变量（macos 皮肤跟随「系统设置 > 强调色」）。
+// 仅桌面 app 有 fanboxTheme；浏览器版直接跳过，用 CSS 兜底的系统蓝。
+let __sysAccentOff = null, __sysThemeSynced = false;
+function applySystemAccent() {
+  if (!window.fanboxTheme) return;
+  window.fanboxTheme.get().then(({ accent, dark }) => {
+    const root = document.documentElement;
+    if (accent && /^[0-9a-f]{6}$/i.test(accent)) {
+      root.style.setProperty("--accent", "#" + accent);
+      root.style.setProperty("--accent-soft", "#" + accent + "26");
+    }
+  }).catch(() => {});
+}
+// 注册一次：系统强调色/深浅外观变化时实时跟随（matchMedia 管深浅、fanboxTheme 管强调色）
+function initSystemThemeSync() {
+  if (__sysThemeSynced) return; __sysThemeSynced = true;
+  if (window.fanboxTheme && window.fanboxTheme.onChanged) {
+    __sysAccentOff = window.fanboxTheme.onChanged(({ accent }) => {
+      if (state.theme === "macos") {
+        if (accent && /^[0-9a-f]{6}$/i.test(accent)) {
+          document.documentElement.style.setProperty("--accent", "#" + accent);
+          document.documentElement.style.setProperty("--accent-soft", "#" + accent + "26");
+        }
+      }
+    });
+  }
+}
+
 // ---------- 主题 / 皮肤 ----------
 function applyTheme(skin, rerender = true) {
-  if (!['terminal', 'warm', 'editorial'].includes(skin)) skin = 'terminal';
+  if (!['terminal', 'warm', 'editorial', 'macos'].includes(skin)) skin = 'terminal';
   state.theme = skin;
   document.documentElement.dataset.theme = skin;
+  // 窗口底色联动：macos 透明（透壁纸 vibrancy），其它皮肤恢复各自底色
+  const winBg = { macos: "#ececec", terminal: "#0b0c0a", warm: "#f5f0e8", editorial: "#f4f1ea" }[skin];
+  if (window.fanboxWin && window.fanboxWin.setBackground) window.fanboxWin.setBackground(winBg);
+  // macOS 系统皮肤：注入系统强调色并跟随系统外观/强调色变化；其它皮肤清除覆盖、恢复 CSS 默认值
+  if (skin === "macos") {
+    applySystemAccent();
+    initSystemThemeSync();
+  } else {
+    document.documentElement.style.removeProperty("--accent");
+    document.documentElement.style.removeProperty("--accent-soft");
+  }
   localStorage.setItem('fb_theme', skin);
   const link = document.getElementById('hljs-theme');
   if (link) link.href = '/vendor/hljs/styles/' + (skin === 'terminal' ? 'github-dark' : 'github') + '.min.css';
@@ -2426,6 +2483,11 @@ const term = {
       background: '#eae5d8', foreground: '#1a1a1a', cursor: '#ff433d', cursorAccent: '#eae5d8', selectionBackground: '#ff433d22',
       black: '#0a0a0a', red: '#cc1f1a', green: '#00803a', yellow: '#8a6d00', blue: '#0000cc', magenta: '#9a2a8a', cyan: '#007a8a', white: '#57534a',
       brightBlack: '#57534a', brightRed: '#e8302a', brightGreen: '#00a33e', brightYellow: '#a67c00', brightBlue: '#2222dd', brightMagenta: '#b03aa0', brightCyan: '#008a9a', brightWhite: '#0a0a0a',
+    },
+    macos: {
+      background: '#ffffff', foreground: '#1d1d1f', cursor: '#0a84ff', cursorAccent: '#ffffff', selectionBackground: '#0a84ff33',
+      black: '#1d1d1f', red: '#ff453a', green: '#30d158', yellow: '#ff9f0a', blue: '#0a84ff', magenta: '#bf5af2', cyan: '#40c8e0', white: '#6e6e73',
+      brightBlack: '#a1a1a6', brightRed: '#ff6961', brightGreen: '#50e36b', brightYellow: '#ffb340', brightBlue: '#409cff', brightMagenta: '#d18cff', brightCyan: '#64dffd', brightWhite: '#1d1d1f',
     },
   },
   theme() { return this.themes[state.theme] || this.themes.terminal; },
@@ -3281,7 +3343,7 @@ async function invokeSkillInTerm(name) {
 // ---------- Monaco 编辑器（本地 vendor，离线可用；加载失败回退 textarea）----------
 const mona = {
   editor: null, _p: null,
-  themeFor: { terminal: 'fb-dark', warm: 'fb-paper', editorial: 'fb-editorial' },
+  themeFor: { terminal: 'fb-dark', warm: 'fb-paper', editorial: 'fb-editorial', macos: 'fb-macos' },
   themeName() { return this.themeFor[state.theme] || 'fb-dark'; },
   // 散文类（md/txt/字幕）默认软换行，代码不换行
   wraps(ex) { return ['md', 'markdown', 'txt', 'log', 'srt', 'vtt', 'ass'].includes(ex); },
@@ -3326,6 +3388,7 @@ const mona = {
     m.editor.defineTheme('fb-dark', { base: 'vs-dark', inherit: true, rules: [], colors: { 'editor.background': '#0b0c0a', 'editor.foreground': '#d6dac9', 'editorLineNumber.foreground': '#4a4d42', 'editorCursor.foreground': '#cdf24b', 'editor.selectionBackground': '#cdf24b33', 'editor.lineHighlightBackground': '#ffffff08' } });
     m.editor.defineTheme('fb-paper', { base: 'vs', inherit: true, rules: [], colors: { 'editor.background': '#ece2d2', 'editor.foreground': '#4a3f30', 'editorLineNumber.foreground': '#b3a589', 'editorCursor.foreground': '#cc785c', 'editor.selectionBackground': '#cc785c33', 'editor.lineHighlightBackground': '#00000008' } });
     m.editor.defineTheme('fb-editorial', { base: 'vs', inherit: true, rules: [], colors: { 'editor.background': '#eae5d8', 'editor.foreground': '#1a1a1a', 'editorLineNumber.foreground': '#9a958a', 'editorCursor.foreground': '#ff433d', 'editor.selectionBackground': '#ff433d22', 'editor.lineHighlightBackground': '#00000008' } });
+    m.editor.defineTheme('fb-macos', { base: 'vs', inherit: true, rules: [], colors: { 'editor.background': '#ffffff', 'editor.foreground': '#1d1d1f', 'editorLineNumber.foreground': '#a1a1a6', 'editorCursor.foreground': '#0a84ff', 'editor.selectionBackground': '#0a84ff33', 'editor.lineHighlightBackground': '#00000008' } });
   },
   retheme() { if (this.editor && window.monaco) window.monaco.editor.setTheme(this.themeName()); },
   // 只读并排 diff：HEAD 版本 vs 工作区当前内容，复用 editor 槽位让 disposeIfAny 统一回收

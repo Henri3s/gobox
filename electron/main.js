@@ -5,7 +5,7 @@
  * 复用零依赖后端 server.js（文件能力），叠加 node-pty 内嵌终端，
  * 让 TUI coding agent（Claude Code / Codex / Aider…）在界面里直接跑起来。
  */
-const { app, BrowserWindow, ipcMain, shell, nativeImage, Menu, clipboard, dialog, net, session } = require('electron');
+const { app, BrowserWindow, ipcMain, shell, nativeImage, Menu, clipboard, dialog, net, session, systemPreferences, nativeTheme } = require('electron');
 const path = require('path');
 const os = require('os');
 const fs = require('fs');
@@ -209,6 +209,25 @@ ipcMain.handle('win:focus', () => {
 ipcMain.handle('win:traffic', (e, { show }) => {
   if (!win || win.isDestroyed() || typeof win.setWindowButtonVisibility !== 'function') return;
   win.setWindowButtonVisibility(!!show);
+});
+
+// 动态切窗口背景色：macos 皮肤要透明（让 vibrancy 透出壁纸），其它皮肤恢复各自底色
+ipcMain.handle('win:bg', (e, { color }) => {
+  if (!win || win.isDestroyed() || typeof win.setBackgroundColor !== 'function') return;
+  try { win.setBackgroundColor(color || '#000000'); } catch { /* */ }
+});
+
+// 读取系统强调色 + 当前深浅外观，给「系统皮肤」用（macOS 专属，非 mac 平台返回 null 优雅降级）
+// systemPreferences.getAccentColor() 返回 '83aae3' 形式（无 #）；nativeTheme 反映系统外观
+ipcMain.handle('theme:accent', () => {
+  const accent = (process.platform === 'darwin' && systemPreferences.getAccentColor) ? systemPreferences.getAccentColor() : '';
+  return { accent, dark: !!nativeTheme.shouldUseDarkColors };
+});
+// 系统设置里改强调色 / 深浅外观时，主动推给渲染层实时跟随
+nativeTheme.on('updated', () => {
+  if (!win || win.isDestroyed()) return;
+  const accent = (process.platform === 'darwin' && systemPreferences.getAccentColor) ? systemPreferences.getAccentColor() : '';
+  win.webContents.send('theme:changed', { accent, dark: !!nativeTheme.shouldUseDarkColors });
 });
 
 // 界面语言：用户手动选过的存在 ~/.fanbox/config.json（渲染层切换时写入），没选过跟随系统

@@ -52,9 +52,16 @@ contextBridge.exposeInMainWorld('fanboxUpdate', {
 contextBridge.exposeInMainWorld('fanboxWin', {
   focus: () => ipcRenderer.invoke('win:focus'), // 点通知拉回前台
   trafficLights: (show) => ipcRenderer.invoke('win:traffic', { show }), // 全屏预览时藏/显左上角系统按钮
+  setBackground: (color) => ipcRenderer.invoke('win:bg', { color }), // 切皮肤时改窗口底色（macos 透明透壁纸）
 });
 
 contextBridge.exposeInMainWorld('fanboxEnv', {
   isDesktopApp: true,
   platform: process.platform,
+});
+
+// 系统皮肤用：读系统强调色 + 深浅外观，并在系统设置变化时实时通知
+contextBridge.exposeInMainWorld('fanboxTheme', {
+  get: () => ipcRenderer.invoke('theme:accent'),
+  onChanged: (cb) => { const h = (e, m) => cb(m); ipcRenderer.on('theme:changed', h); return () => ipcRenderer.removeListener('theme:changed', h); },
 });
