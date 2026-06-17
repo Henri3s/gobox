@@ -36,6 +36,14 @@ function extractFiles(reply) {
   return { clean, files };
 }
 
+// 控制别的终端协议：让 agent 能往本机其他正在运行的终端发指令/按键（fire-and-forget，结果下一轮在状态里体现）。
+const WX_TERM_PROTOCOL = [
+  '上下文里会给你一份「本机其他终端实时状态」（带 #编号、目录、前台进程、最近输出）。花叔可能让你看它们在跑啥、或去操控它们。',
+  '要往某个终端输入内容（命令或回答它的提问），在回复末尾追加标记（每个一行，可多个）：',
+  '<term n="编号">要输入的文本</term>',
+  '注意：要执行命令必须让文本以换行结尾（相当于按回车），例如 <term n="2">npm test\\n</term>；只回车确认就写一个 \\n。只有花叔明确要你操控某终端时才用，别擅自发指令。',
+].join('\n');
+
 const bridge = {
   win: null,
   target: 'claude',                // 当前大脑：claude / codex（默认 claude——已验证无头 JSON 干净可用）
@@ -46,6 +54,14 @@ const bridge = {
   account: null,                   // iLink 账号 { token, baseUrl, accountId, userId }
   pollAbort: null,
   avail: null,                     // { codex, claude } CLI 可用性缓存
+  expired: false,                  // 已连过但 token 失效（轮询/探活发现）→ 当作未连，需重新扫码
+  onConnChange: null,              // 连接态变化回调（主进程用来联动「离开不待机」电源守卫）
+  termControl: null,               // 跨终端感知/控制（主进程注入 { list(), send(id,text) }）
+  _termRoster: [],                 // 上一轮注入的终端花名册，用来把 <term n=编号> 映回内部 id
+
+  // 连接是否真活着：有账号、有 token、且没被标记失效
+  isConnected() { return !!(this.account && this.account.token && !this.expired); },
+  fireConnChange() { try { if (this.onConnChange) this.onConnChange(this.isConnected()); } catch { /* */ } },
 
   init(win) {
     this.win = win;
@@ -55,7 +71,8 @@ const bridge = {
     if (typeof st.persona === 'string' && st.persona.trim()) this.persona = st.persona;
     this.conversations = ilink.readJson(f('conversations.json'), {}) || {};
     this.account = ilink.readJson(f('account.json'), null);
-    if (this.account && this.account.token) this.startPolling(); // 已登录则自动恢复收消息
+    driver.warmEnv(); // 启动时预热「终端环境复刻」(抓 PATH/代理)，免得第一条微信消息卡几百毫秒
+    if (this.account && this.account.token) { this.startPolling(); this.fireConnChange(); } // 已登录则自动恢复收消息
   },
   persistState() { ilink.writeJson(f('state.json'), { target: this.target, cwd: this.cwd, persona: this.persona }); },
   setPersona(p) { this.persona = (typeof p === 'string' && p.trim()) ? p : WX_PERSONA_DEFAULT; this.persistState(); return { ok: true, persona: this.persona }; },
@@ -81,10 +98,24 @@ const bridge = {
       { id: 'claude', label: 'Claude Code', available: this.avail.claude },
     ];
   },
+  // 主动探活：打开面板时调，给前端一个权威的连接状态（不只是读「有没有存账号」）
+  async check() {
+    if (!this.isConnected()) return { ok: true, state: this.account ? 'expired' : 'disconnected' };
+    try {
+      const r = await ilink.ping(this.account);
+      const j = r.json || {};
+      if (r.status === 401 || r.status === 403 || j.errcode === -14 || j.ret === -14) {
+        this.expired = true; this.fireConnChange(); this.emit('wechat:expired', {});
+        return { ok: true, state: 'expired' };
+      }
+      if (r.ok) { this.expired = false; return { ok: true, state: 'connected' }; }
+      return { ok: true, state: 'unreachable' }; // 临时网络问题，别逼用户重扫
+    } catch { return { ok: true, state: 'unreachable' }; }
+  },
   async env() {
     return {
       ok: true,
-      connected: !!(this.account && this.account.token),
+      connected: this.isConnected(),
       account: this.account ? this.account.accountId : '',
       target: this.target,
       targets: await this.targets(),
@@ -98,11 +129,43 @@ const bridge = {
   setCwd(dir) { if (dir && typeof dir === 'string') { this.cwd = dir; this.persistState(); } return { ok: true }; },
   conversation(cid) { const c = this.conv(cid || this.activeCid); return { ok: true, id: c.id, messages: c.messages }; },
 
+  // 本机其他终端实时状态：花名册（编号/目录/进程/忙闲）+ 最近输出尾巴，注入给 agent 感知
+  async buildTermContext() {
+    if (!this.termControl) return '';
+    let list = [];
+    try { list = await this.termControl.list(); } catch { return ''; }
+    this._termRoster = list; // 存下来，<term n=编号> 按此映回内部 id
+    if (!list.length) return '【本机其他终端】当前没有正在运行的终端。';
+    const oneLine = (s) => String(s || '').replace(/\s+/g, ' ').trim().slice(-360);
+    const lines = list.map((t, i) => `#${i + 1} ${t.name || '终端'}｜目录:${t.cwd || '?'}｜前台:${t.proc || 'shell'}${t.busy ? '(运行中)' : '(空闲)'}\n  最近输出: ${oneLine(t.tail) || '（无）'}`);
+    return '【本机其他终端实时状态】（花叔可能让你查看或操控它们）\n' + lines.join('\n');
+  },
+  // 抽出 <term n=编号>文本</term>，返回 { clean, ops:[{n,text}] }
+  extractTermOps(reply) {
+    const ops = [];
+    const clean = String(reply || '').replace(/<term\s+n=["']?(\d+)["']?\s*>([\s\S]*?)<\/term>/gi, (_, n, txt) => { ops.push({ n: parseInt(n, 10), text: txt }); return ''; }).trim();
+    return { clean, ops };
+  },
+  // 执行 agent 发出的终端操作：按花名册编号映回 id，写进对应 pty。返回一句话回执（附到正文）。
+  runTermOps(reply) {
+    const { clean, ops } = this.extractTermOps(reply);
+    if (!ops.length || !this.termControl) return clean || reply;
+    const done = [];
+    for (const op of ops) {
+      const t = this._termRoster[op.n - 1];
+      if (!t) { done.push(`#${op.n}（找不到）`); continue; }
+      const r = this.termControl.send(t.id, op.text);
+      done.push(r && r.ok ? `#${op.n} ${t.name || ''}`.trim() : `#${op.n}（失败）`);
+    }
+    return (clean || '') + (done.length ? `\n\n⌨️ 已向终端发送：${done.join('、')}` : '');
+  },
+
   // 跑一轮大脑：按 target 选 driver，带上该会话的工作目录与（claude 的）续话 session
   async runAgent(cid, text) {
     const c = this.conv(cid);
-    // 系统提示 = 人格 + 注入记忆（FanBox 自己的 + 引用花叔全局）+ 记忆写入协议 + 发文件协议
-    const sys = [this.persona, memory.inject(), memory.PROTOCOL, WX_FILE_PROTOCOL].filter(Boolean).join('\n\n');
+    // 系统提示 = 人格 + 注入记忆 + 记忆协议 + 发文件协议 + 控制终端协议 + 别的终端实时状态
+    const termCtx = await this.buildTermContext();
+    const sys = [this.persona, memory.inject(), memory.PROTOCOL, WX_FILE_PROTOCOL, WX_TERM_PROTOCOL, termCtx].filter(Boolean).join('\n\n');
     let raw;
     if (this.target === 'claude') {
       const r = await driver.runClaude(text, this.cwd, c.claudeSession, sys);
@@ -116,7 +179,8 @@ const bridge = {
     // 抽出 <memory> ops 确定性落盘（去污染），把记忆块从展示里剥掉
     const { clean, ops } = memory.extractOps(raw);
     if (ops.length) { try { memory.applyOps(ops); } catch (e) { console.error('[wechat] memory apply', e); } }
-    return clean || raw;
+    // 抽出 <term> ops 写进别的终端（fire-and-forget），把标记从展示里剥掉、附一句回执
+    return this.runTermOps(clean || raw);
   },
 
   // 桌面输入框 → 本机大脑（不经微信，纯本地）
@@ -147,9 +211,11 @@ const bridge = {
         const s = st.status;
         if (s === 'confirmed') {
           this.account = { token: st.bot_token, baseUrl: st.baseurl || base, accountId: st.ilink_bot_id || '', userId: st.ilink_user_id || '' };
+          this.expired = false;
           ilink.writeJson(f('account.json'), this.account);
           this.emit('wechat:connected', { ok: true, account: this.account.accountId });
           this.startPolling();
+          this.fireConnChange();
           return { ok: true };
         }
         if (s === 'scaned_but_redirect' && st.redirect_host) { base = `https://${st.redirect_host}`; continue; }
@@ -173,7 +239,7 @@ const bridge = {
           const resp = await ilink.getUpdates(this.account, buf, timeout, ac.signal);
           if (resp.longpolling_timeout_ms > 0) timeout = resp.longpolling_timeout_ms;
           if ((resp.ret && resp.ret !== 0) || (resp.errcode && resp.errcode !== 0)) {
-            if (resp.errcode === -14 || resp.ret === -14) { this.emit('wechat:expired', {}); break; } // token 失效
+            if (resp.errcode === -14 || resp.ret === -14) { this.expired = true; this.emit('wechat:expired', {}); this.fireConnChange(); break; } // token 失效
             fails++; await sleep(fails >= 3 ? 30000 : 2000); continue;
           }
           fails = 0;
@@ -216,7 +282,9 @@ const bridge = {
   disconnect() {
     if (this.pollAbort) { try { this.pollAbort.abort(); } catch { /* */ } this.pollAbort = null; }
     this.account = null;
+    this.expired = false;
     ilink.writeJson(f('account.json'), null);
+    this.fireConnChange();
     return { ok: true };
   },
 };

@@ -2105,8 +2105,9 @@ function bindTerminalResizer() {
 
 // ---------- 微信 ClawBot：终端内的 IM 界面（设计方向 A）。桌面输入直连本机 claude/codex，可选连手机微信遥控 ----------
 const wechatView = {
-  offMsg: null, offQr: null, offConn: null, onKey: null, onDoc: null,
+  offMsg: null, offQr: null, offConn: null, offExpired: null, offPower: null, onKey: null, onDoc: null,
   target: 'codex', targets: [], connected: false, cwdName: '', menuOpen: false,
+  connState: 'unknown', stayAwake: false, platform: '',
   el() { return $('#wechat-view'); },
   shown() { const e = this.el(); return e && !e.classList.contains('hidden'); },
   toggle() { this.shown() ? this.close() : this.open(); },
@@ -2126,6 +2127,11 @@ const wechatView = {
     };
     document.addEventListener('keydown', this.onKey, true);
     this.offMsg = window.fanboxWechat.onMessage(() => this.loadChat());
+    // 连接失效（轮询/探活发现 token 掉了）→ 立刻翻红 + 弹重连横幅，不让用户对着死连接干瞪眼
+    this.offExpired = window.fanboxWechat.onExpired ? window.fanboxWechat.onExpired(() => this.setConn('expired')) : null;
+    // 免密规则丢失等导致后端强制关掉「不待机」→ 同步开关 UI
+    this.offPower = window.fanboxWechat.onPower ? window.fanboxWechat.onPower((m) => { this.stayAwake = !!(m && m.stayAwake); this.syncAwake(); }) : null;
+    this.loadPower();
     await this.detect();
   },
   close() {
@@ -2136,6 +2142,8 @@ const wechatView = {
   },
   teardown() {
     if (this.offMsg) { this.offMsg(); this.offMsg = null; }
+    if (this.offExpired) { this.offExpired(); this.offExpired = null; }
+    if (this.offPower) { this.offPower(); this.offPower = null; }
     this.teardownScan();
     this.menuOpen = false;
   },
@@ -2149,24 +2157,34 @@ const wechatView = {
     e.innerHTML = `<div class="wx-bar">
         <span class="wx-dot off" id="wx-dot"></span>
         <span class="wx-name">微信 ClawBot</span>
+        <span class="wx-status" id="wx-status"></span>
         <span class="wx-spacer"></span>
+        <button class="wx-awake hidden" id="wx-awake">🌙 离开不待机</button>
         <span class="wx-brain" id="wx-brain">连到 Codex <span class="caret">▾</span></span>
         <button class="wx-x" id="wx-close" title="收起（回到终端）">✕</button>
         <div class="wx-menu hidden" id="wx-menu"></div>
       </div>
       <div class="wx-body">
+        <div class="wx-reconnect hidden" id="wx-reconnect">
+          <span class="wx-reconnect-msg" id="wx-reconnect-msg"></span>
+          <span class="wx-spacer"></span>
+          <button class="wx-reconnect-btn" id="wx-reconnect-btn">重新连接</button>
+        </div>
         <div class="wx-chat" id="wx-chat"></div>
         <div class="wx-scan hidden" id="wx-scan"></div>
         <div class="wx-viewonly">仅查看手机微信与本机大脑的对话记录，回复请在手机微信进行</div>
       </div>`;
     e.querySelector('#wx-close').onclick = () => this.close();
     e.querySelector('#wx-brain').onclick = (ev) => { ev.stopPropagation(); this.toggleMenu(); };
+    e.querySelector('#wx-awake').onclick = () => this.toggleAwake();
+    e.querySelector('#wx-reconnect-btn').onclick = () => this.connectPhone();
+    this.syncAwake();
     this.onDoc = (ev) => { if (this.menuOpen && !ev.target.closest('#wx-menu') && !ev.target.closest('#wx-brain')) this.closeMenu(); };
     document.addEventListener('click', this.onDoc, true);
   },
   async detect() {
+    this.setConn('checking'); // 打开就给「检测中」即时反馈，别让用户盯着一个不知真假的绿点
     const env = await window.fanboxWechat.env().catch(() => ({}));
-    this.connected = !!env.connected;
     this.targets = (env.targets && env.targets.length) ? env.targets : [{ id: 'codex', label: 'Codex', available: true }, { id: 'claude', label: 'Claude Code', available: true }];
     if (env.target) this.target = env.target;
     this.cwdName = env.cwdName || '';
@@ -2174,13 +2192,67 @@ const wechatView = {
     this.personaDefault = env.personaDefault || '';
     this.syncBar();
     await this.loadChat();
+    // 主动探活，拿到权威状态（connected / expired / unreachable / disconnected）
+    const r = window.fanboxWechat.check ? await window.fanboxWechat.check().catch(() => ({})) : {};
+    this.setConn(r.state || (env.connected ? 'connected' : 'disconnected'));
   },
   label(id) { const t = this.targets.find((x) => x.id === id); return t ? t.label : (id === 'claude' ? 'Claude Code' : 'Codex'); },
+  // 连接状态机：连接监测的唯一出口，统一刷点/状态文案/重连横幅/顶栏绿点
+  setConn(state) { this.connState = state; this.connected = (state === 'connected'); this.applyConn(); },
+  applyConn() {
+    const e = this.el(); if (!e) return;
+    const map = {
+      checking: { cls: 'checking', text: '检测连接中…' },
+      connected: { cls: '', text: '已连接' },
+      expired: { cls: 'bad', text: '连接已失效' },
+      unreachable: { cls: 'bad', text: '连接异常' },
+      disconnected: { cls: 'off', text: '未连接' },
+      unknown: { cls: 'off', text: '' },
+    };
+    const m = map[this.connState] || map.unknown;
+    const dot = e.querySelector('#wx-dot'); if (dot) dot.className = ('wx-dot ' + m.cls).trim();
+    const status = e.querySelector('#wx-status'); if (status) status.textContent = m.text;
+    // 失效 / 未连 → 醒目重连横幅（直接弹二维码）；检测中 / 已连 / 临时异常不打扰
+    const rc = e.querySelector('#wx-reconnect');
+    if (rc) {
+      const show = this.connState === 'expired' || this.connState === 'disconnected';
+      rc.classList.toggle('hidden', !show);
+      if (show) {
+        const msg = rc.querySelector('#wx-reconnect-msg'); const btn = rc.querySelector('#wx-reconnect-btn');
+        if (msg) msg.textContent = this.connState === 'expired' ? '微信连接已失效，需要重新扫码' : '还没连接手机微信';
+        if (btn) btn.textContent = this.connState === 'expired' ? '重新连接' : '连接手机微信';
+      }
+    }
+    this.syncDot(this.connState === 'connected');
+  },
   syncBar() {
     const e = this.el(); if (!e) return;
-    const dot = e.querySelector('#wx-dot'); if (dot) dot.classList.toggle('off', !this.connected);
     const brain = e.querySelector('#wx-brain'); if (brain) brain.innerHTML = `连到 ${escapeHtml(this.label(this.target))} <span class="caret">${this.menuOpen ? '▴' : '▾'}</span>`;
-    this.syncDot(this.connected);
+    this.applyConn();
+  },
+  // 「离开不待机」开关
+  async loadPower() {
+    if (!window.fanboxWechat.powerState) return;
+    const p = await window.fanboxWechat.powerState().catch(() => ({}));
+    this.platform = p.platform || (window.fanboxEnv && window.fanboxEnv.platform) || '';
+    this.stayAwake = !!p.stayAwake;
+    this.syncAwake();
+  },
+  syncAwake() {
+    const e = this.el(); if (!e) return;
+    const btn = e.querySelector('#wx-awake'); if (!btn) return;
+    const mac = (this.platform || (window.fanboxEnv && window.fanboxEnv.platform)) === 'darwin';
+    btn.classList.toggle('hidden', !mac); // 仅 macOS 支持（pmset 禁休眠）
+    btn.classList.toggle('on', this.stayAwake);
+    btn.textContent = this.stayAwake ? '🌙 离开不待机 · 开' : '🌙 离开不待机';
+    btn.title = this.stayAwake
+      ? '已开启：微信连着时，合盖 / 息屏也不休眠，离开电脑也能远程操控。点击关闭'
+      : '开启后离开电脑也能用微信遥控：合盖 / 息屏不休眠（断开微信自动恢复）';
+  },
+  async toggleAwake() {
+    const r = await window.fanboxWechat.setStayAwake(!this.stayAwake).catch(() => ({}));
+    if (r && r.ok) { this.stayAwake = !!r.on; this.syncAwake(); toast(this.stayAwake ? '已开启 · 离开也能用微信遥控本机' : '已关闭 · 恢复正常休眠'); }
+    else { this.stayAwake = !!(r && r.on); this.syncAwake(); if (r && r.error && r.error !== 'cancelled' && r.error !== 'setup-cancelled') toast('开启失败：' + r.error, true); }
   },
   toggleMenu() { this.menuOpen ? this.closeMenu() : this.openMenu(); },
   openMenu() {
@@ -2250,7 +2322,7 @@ const wechatView = {
       if (m.expired) { qr.innerHTML = `<div class="wx-loading">二维码过期，请重试</div>`; return; }
       qr.innerHTML = m.dataUrl ? `<img src="${m.dataUrl}" alt="二维码">` : `<div class="wx-loading">${escapeHtml(m.content || '二维码生成失败')}</div>`;
     });
-    this.offConn = window.fanboxWechat.onConnected(async () => { this.teardownScan(); scan.classList.add('hidden'); this.connected = true; await this.detect(); toast('微信已连接'); });
+    this.offConn = window.fanboxWechat.onConnected(async () => { this.teardownScan(); scan.classList.add('hidden'); this.setConn('connected'); await this.detect(); toast('微信已连接'); });
     window.fanboxWechat.login().then((r) => { if (r && !r.ok) { const qr = this.el() && this.el().querySelector('#wx-qr'); if (qr) qr.innerHTML = `<div class="wx-loading">${escapeHtml(r.error || '登录失败')}</div>`; } });
   },
   // 自定义微信 bot 人格：复用 scan 覆盖层做一个编辑面板
@@ -2277,7 +2349,7 @@ const wechatView = {
       scan.classList.add('hidden'); toast('人格已更新');
     };
   },
-  async disconnectPhone() { await window.fanboxWechat.disconnect().catch(() => {}); this.connected = false; this.syncBar(); toast('已断开手机微信'); },
+  async disconnectPhone() { await window.fanboxWechat.disconnect().catch(() => {}); this.setConn('disconnected'); toast('已断开手机微信'); },
   syncDot(on) { const d = $('#wechat-dot'); if (d) d.classList.toggle('hidden', !on); const btn = $('#term-wechat'); if (btn) btn.classList.toggle('on', on); },
 };
 
@@ -2322,7 +2394,7 @@ function bindEvents() {
   $('#term-close').onclick = () => term.close();
   $('#btn-sidebar').onclick = () => toggleSidebar();
   $('#file-follow').onclick = () => setFileFollow(!follow.on);
-  $('#term-locate').onclick = () => term.locateCwd();
+  // 定位文件按钮已撤（双击终端 tab 即可定位，见 term.locateCwd / renderTabs 的 ondblclick）
   // 终端随窗口尺寸变化重排，避免 TUI 错位
   window.addEventListener('resize', () => term.fitActive());
   if (window.ResizeObserver) new ResizeObserver(() => term.fitActive()).observe($('#xterm-host'));

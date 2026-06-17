@@ -2,18 +2,16 @@
 // 用户文本一律走 stdin（不进命令行，零转义/长度风险）；claude 用 session_id 续上下文。
 // 复用本机已登录的 claude/codex 凭据，原生读 cwd 下的 CLAUDE.md / AGENTS.md。
 const { spawn } = require('child_process');
+const { fullEnv } = require('./env');
 
 const loginShell = () => process.env.SHELL || (process.platform === 'win32' ? 'powershell.exe' : '/bin/zsh');
-function shellEnv() {
-  const env = { ...process.env };
-  if (!/UTF-8/i.test(env.LC_ALL || env.LC_CTYPE || env.LANG || '')) env.LANG = 'en_US.UTF-8';
-  return env;
-}
 
-// 跑一条命令（login shell 带全 PATH，GUI 启动只继承精简 PATH），prompt 写 stdin
-function run(cmd, stdinText, cwd, timeoutMs = 180000) {
+// 跑一条命令，prompt 写 stdin。env 复刻自用户的交互式登录 shell（见 env.js）：
+// 打包后从 Finder 启动会丢掉 PATH/代理/BASE_URL，这里补回来，子进程联网方式和用户终端一致。
+async function run(cmd, stdinText, cwd, timeoutMs = 180000) {
+  const env = await fullEnv();
   return new Promise((resolve) => {
-    const child = spawn(loginShell(), ['-lc', cmd], { cwd: cwd || process.env.HOME, env: shellEnv() });
+    const child = spawn(loginShell(), ['-lc', cmd], { cwd: cwd || env.HOME || process.env.HOME, env });
     let out = '', err = '', done = false;
     const finish = (r) => { if (done) return; done = true; resolve(r); };
     const timer = setTimeout(() => { try { child.kill('SIGKILL'); } catch { /* */ } finish({ ok: false, out, err: err + '\n[超时]' }); }, timeoutMs);
@@ -91,4 +89,7 @@ function stripAnsi(s) { return s.replace(/\[[0-9;]*m/g, ''); }
 // shell 单引号安全包裹（人格可能含引号/换行/中文）
 function shq(s) { return `'${String(s).replace(/'/g, "'\\''")}'`; }
 
-module.exports = { runClaude, runCodex, which };
+// 启动时预热终端环境复刻（缓存到 env.js，第一条消息就不必等 shell 起来）
+function warmEnv() { fullEnv().catch(() => { /* 失败就退回 process.env，run 时再算 */ }); }
+
+module.exports = { runClaude, runCodex, which, warmEnv };

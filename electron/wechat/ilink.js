@@ -94,6 +94,15 @@ async function sendTyping(account, userId, on) {
   } catch { /* 输入指示失败无所谓 */ }
 }
 
+// 轻量探活：用 getconfig（带凭证、返回快）确认连接/token 是否仍有效。返回 { ok, status, json }。
+async function ping(account) {
+  return httpJson(`${account.baseUrl}/ilink/bot/getconfig`, {
+    headers: postHeaders(account.token),
+    body: { ilink_user_id: account.userId || '', base_info: baseInfo() },
+    timeoutMs: 8000,
+  });
+}
+
 // ---------- 发媒体（图片 / 文件）----------
 // 三段式：getuploadurl 拿上传参数 → 把 AES 密文 POST 到 CDN → sendmessage 带 media 引用。
 //  AES-128-ECB + PKCS7，key 自己随机生成；同一 key 既加密字节、又（hex）填 getuploadurl、又（base64(hex)）填消息。
@@ -160,5 +169,5 @@ function readJson(file, fallback) { try { return JSON.parse(fs.readFileSync(file
 function writeJson(file, obj) { try { fs.mkdirSync(path.dirname(file), { recursive: true }); fs.writeFileSync(file, JSON.stringify(obj, null, 2)); } catch { /* */ } }
 
 module.exports = {
-  LOGIN_BASE, fetchQrcode, pollQrStatus, getUpdates, sendText, sendTyping, sendMedia, textFromMsg, readJson, writeJson,
+  LOGIN_BASE, fetchQrcode, pollQrStatus, getUpdates, sendText, sendTyping, sendMedia, textFromMsg, readJson, writeJson, ping,
 };

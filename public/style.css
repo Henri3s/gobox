@@ -773,7 +773,23 @@ kbd {
 .wx-bar { position: relative; height: 46px; flex: 0 0 auto; display: flex; align-items: center; gap: 9px; padding: 0 8px 0 16px; border-bottom: 1px solid var(--border); background: var(--bg-2); }
 .wx-dot { width: 7px; height: 7px; border-radius: 50%; background: #07C160; box-shadow: 0 0 0 3px rgba(7,193,96,.14); flex: 0 0 7px; }
 .wx-dot.off { background: var(--text-dim); box-shadow: none; opacity: .55; }
+.wx-dot.checking { background: #e0a52e; box-shadow: 0 0 0 3px rgba(224,165,46,.16); animation: wxPulse 1s ease-in-out infinite; }
+.wx-dot.bad { background: #e5484d; box-shadow: 0 0 0 3px rgba(229,72,77,.16); }
+@keyframes wxPulse { 50% { opacity: .35; } }
 .wx-name { font-size: 14px; font-weight: 600; color: var(--text); }
+.wx-status { font-size: 11.5px; color: var(--text-dim); white-space: nowrap; }
+.wx-dot.bad ~ .wx-status, .wx-status.bad { color: #e5484d; }
+/* 离开不待机：一键开关，开启后微信连着也不休眠 */
+.wx-awake { display: inline-flex; align-items: center; gap: 5px; font-size: 12px; color: var(--text-dim); background: transparent; border: 1px solid var(--border); padding: 4px 10px; border-radius: 99px; cursor: pointer; white-space: nowrap; }
+.wx-awake:hover { background: var(--bg-3); color: var(--text); }
+.wx-awake.on { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 45%, transparent); background: var(--accent-soft); font-weight: 600; }
+.wx-awake.hidden { display: none; }
+/* 连接失效 / 未连 → 醒目重连横幅，直接弹二维码重扫 */
+.wx-reconnect { flex: 0 0 auto; display: flex; align-items: center; gap: 10px; padding: 9px 16px; background: color-mix(in srgb, #e5484d 9%, var(--bg-2)); border-bottom: 1px solid color-mix(in srgb, #e5484d 22%, var(--border)); }
+.wx-reconnect.hidden { display: none; }
+.wx-reconnect-msg { font-size: 12.5px; color: #c2342f; font-weight: 500; }
+.wx-reconnect-btn { flex: 0 0 auto; font-size: 12.5px; font-weight: 600; color: #fff; background: #e5484d; border: 0; padding: 6px 14px; border-radius: 7px; cursor: pointer; }
+.wx-reconnect-btn:hover { background: #d13b40; }
 .wx-spacer { flex: 1; }
 /* 安静的大脑下拉触发器 */
 .wx-brain { display: inline-flex; align-items: center; gap: 6px; font-size: 12.5px; color: var(--text-dim); padding: 5px 9px; border-radius: 7px; cursor: pointer; user-select: none; white-space: nowrap; }
@@ -974,8 +990,8 @@ kbd {
    全屏期间把顶栏/品牌区的拖拽关掉，让预览自己的按钮可点（全屏本就不需要拖这条顶栏）。 */
 .desktop.preview-maxed #topbar, .desktop.preview-maxed .brand { -webkit-app-region: no-drag; }
 
-/* 终端头：跟随/定位 文字按钮 */
-.term-actions #file-follow, .term-actions #term-locate { font-size: 11px; padding: 3px 8px; font-family: var(--font-ui); }
+/* 终端头：文件跟随按钮 */
+.term-actions #file-follow { font-size: 11px; padding: 3px 8px; font-family: var(--font-ui); }
 .term-actions #file-follow.on { color: var(--accent); background: var(--accent-soft); }
 .term-actions #term-max.on { color: var(--accent-ink); background: var(--accent); }
 .nav-buttons #btn-sidebar.on { color: var(--accent); border-color: var(--accent); }
@@ -992,9 +1008,9 @@ kbd {
 .desktop #topbar { background-color: var(--bg-2); }
 .desktop #sidebar { background-color: color-mix(in srgb, var(--panel) 80%, transparent); }
 
-/* 跟随/定位 改为图标+文字，覆盖前面的纯文字规则 */
-.term-actions #file-follow, .term-actions #term-locate { display: inline-flex; align-items: center; gap: 4px; }
-.term-actions #file-follow svg, .term-actions #term-locate svg { flex-shrink: 0; }
+/* 文件跟随：纯图标按钮（文字已撤） */
+.term-actions #file-follow { display: inline-flex; align-items: center; }
+.term-actions #file-follow svg { flex-shrink: 0; }
 
 /* ---------- 文件跟随：实时徽标 + 代码流动 + html 双缓冲 ---------- */
 .live-badge { display: inline-flex; align-items: center; gap: 5px; margin-right: 8px; padding: 1px 7px; border-radius: 99px; font-size: 10px; font-weight: 700; letter-spacing: 0.5px; color: var(--accent); background: var(--accent-soft); flex-shrink: 0; }
@@ -1206,4 +1222,4 @@ body { transition: background-color 0.28s ease, color 0.28s ease; }
 .rp-export:disabled { opacity: 0.5; cursor: default; }
 /* 回放入口发现点：有录像时按钮右上角一个小红点 */
 #term-replay { position: relative; }
-#term-replay.has-rec::after { content: ''; position: absolute; top: 2px; right: 2px; width: 6px; height: 6px; border-radius: 50%; background: #e5484d; box-shadow: 0 0 0 1.5px var(--bg-2); }
+#term-replay.has-rec::after { content: ''; position: absolute; top: 3px; right: 3px; width: 5px; height: 5px; border-radius: 50%; background: #e5484d; }

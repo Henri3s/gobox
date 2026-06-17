@@ -79,7 +79,12 @@ contextBridge.exposeInMainWorld('fanboxWechat', {
   conversation: (id) => ipcRenderer.invoke('wechat:conversation', { id }), // 取某会话消息（默认当前活跃）
   disconnect: () => ipcRenderer.invoke('wechat:disconnect'),
   cancel: () => ipcRenderer.invoke('wechat:cancel'),
+  check: () => ipcRenderer.invoke('wechat:check'),                     // 主动探活 → { state: connected/expired/unreachable/disconnected }
+  setStayAwake: (on) => ipcRenderer.invoke('wechat:setStayAwake', { on }), // 「离开不待机」开关（macOS）
+  powerState: () => ipcRenderer.invoke('wechat:powerState'),          // { stayAwake, active, platform }
   onQr: (cb) => { const h = (e, m) => cb(m); ipcRenderer.on('wechat:qr', h); return () => ipcRenderer.removeListener('wechat:qr', h); },
   onConnected: (cb) => { const h = (e, m) => cb(m); ipcRenderer.on('wechat:connected', h); return () => ipcRenderer.removeListener('wechat:connected', h); },
   onMessage: (cb) => { const h = (e, m) => cb(m); ipcRenderer.on('wechat:message', h); return () => ipcRenderer.removeListener('wechat:message', h); },
+  onExpired: (cb) => { const h = (e, m) => cb(m); ipcRenderer.on('wechat:expired', h); return () => ipcRenderer.removeListener('wechat:expired', h); },
+  onPower: (cb) => { const h = (e, m) => cb(m); ipcRenderer.on('wechat:power', h); return () => ipcRenderer.removeListener('wechat:power', h); },
 });
