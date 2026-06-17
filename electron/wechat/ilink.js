@@ -155,6 +155,41 @@ async function sendMedia(account, toUserId, filePath, contextToken) {
   return r.json;
 }
 
+// ---------- 收媒体（图片 / 文件）----------
+// 发媒体的逆运算：从入站 item 里拿下载地址 + 密钥 → GET 密文 → AES-128-ECB 解密去 PKCS7 → 落盘。
+//  密钥来源：item.aeskey（hex，已验证）优先；退回 base64(hex) 的 media.aes_key。
+//  下载地址：media.full_url（已验证）优先；退回用 encrypt_query_param 拼 CDN download。
+function imgExtFromMagic(buf) {
+  const h = buf.slice(0, 4).toString('hex');
+  if (h.startsWith('ffd8')) return 'jpg';
+  if (h.startsWith('89504e47')) return 'png';
+  if (h.startsWith('47494638')) return 'gif';
+  if (h.startsWith('52494646')) return 'webp';
+  return 'bin';
+}
+async function downloadMedia(item, destDir) {
+  const media = item.media || {};
+  const url = media.full_url || `${CDN_BASE}/download?encrypted_query_param=${encodeURIComponent(media.encrypt_query_param || '')}`;
+  let keyHex = item.aeskey || '';
+  if (!/^[0-9a-fA-F]{32}$/.test(keyHex) && media.aes_key) { try { keyHex = Buffer.from(media.aes_key, 'base64').toString('utf8'); } catch { /* */ } }
+  if (!/^[0-9a-fA-F]{32}$/.test(keyHex)) throw new Error('拿不到解密密钥');
+  const ac = new AbortController();
+  const t = setTimeout(() => ac.abort(), 60000);
+  let cipher;
+  try { const res = await fetch(url, { signal: ac.signal }); if (!res.ok) throw new Error(`下载 HTTP ${res.status}`); cipher = Buffer.from(await res.arrayBuffer()); }
+  finally { clearTimeout(t); }
+  const d = crypto.createDecipheriv('aes-128-ecb', Buffer.from(keyHex, 'hex'), null); // setAutoPadding 默认 true，自动去 PKCS7
+  const plain = Buffer.concat([d.update(cipher), d.final()]);
+  if (!plain.length) throw new Error('解密后为空');
+  // 文件名：file_item 用原名（去路径分隔防穿越）；图片按 magic 猜扩展名
+  let name = item.file_name ? path.basename(String(item.file_name)) : `wx-image-${Date.now()}.${imgExtFromMagic(plain)}`;
+  fs.mkdirSync(destDir, { recursive: true });
+  let dest = path.join(destDir, name);
+  if (fs.existsSync(dest)) { const e = path.extname(name); dest = path.join(destDir, `${path.basename(name, e)}-${Date.now()}${e}`); } // 防重名
+  fs.writeFileSync(dest, plain);
+  return dest;
+}
+
 // 从一条收到的消息里提取内容：纯文本（文本/语音转写）+ 媒体附件（图片/文件）。
 // 媒体的真实下载/解密待 downloadMedia 实现（入站字段结构需真实样本确认，先把 item 原样带出）。
 function contentFromMsg(msg) {
@@ -174,5 +209,5 @@ function readJson(file, fallback) { try { return JSON.parse(fs.readFileSync(file
 function writeJson(file, obj) { try { fs.mkdirSync(path.dirname(file), { recursive: true }); fs.writeFileSync(file, JSON.stringify(obj, null, 2)); } catch { /* */ } }
 
 module.exports = {
-  LOGIN_BASE, fetchQrcode, pollQrStatus, getUpdates, sendText, sendTyping, sendMedia, contentFromMsg, readJson, writeJson, ping,
+  LOGIN_BASE, fetchQrcode, pollQrStatus, getUpdates, sendText, sendTyping, sendMedia, downloadMedia, contentFromMsg, readJson, writeJson, ping,
 };

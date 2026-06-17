@@ -300,15 +300,22 @@ const bridge = {
     const from = msg.from_user_id;
     if (!from) return;
     const { text, medias } = ilink.contentFromMsg(msg);
-    if (medias.length) this.logInbound(msg);      // 抓样本：好实现真读取
     if (!text && !medias.length) return;          // 真空消息才丢
     this.activeCid = from;
     // UI/历史里展示用户发了啥；纯媒体没配文字时给个占位
     this.push(from, 'user', text || `（${medias.map((m) => (m.kind === 'image' ? '图片' : '文件')).join('、')}）`);
-    // 媒体内容暂时读不到（downloadMedia 待样本确认字段）→ 告诉 agent 收到了什么，先有回应不石沉大海
-    const mediaNote = medias.length
-      ? `\n\n[花叔通过微信发来${medias.map((m) => `一个${m.kind === 'image' ? '图片' : '文件'}「${m.name}」`).join('、')}。读取能力还在接入，暂时拿不到内容。请先回应一下你收到了他发的东西、问他想让你做什么，别说自己「无法接收文件」。]`
-      : '';
+    // 媒体真读取：下载解密落盘到收件箱，把绝对路径喂给 agent 让它 Read。失败的留个原始 JSON 样本好排查。
+    let mediaNote = '';
+    if (medias.length) {
+      const ok = [], bad = [];
+      for (const m of medias) {
+        try { ok.push(await ilink.downloadMedia(m.item, f('inbox'))); }
+        catch (e) { bad.push(`${m.name}（${String(e && e.message || e).slice(0, 80)}）`); this.logInbound(msg); }
+      }
+      const okLine = ok.length ? `花叔通过微信发来${ok.length}个文件，已存到本机，请用 Read 工具直接读取来理解内容、再回应他：\n${ok.map((p) => `- ${p}`).join('\n')}` : '';
+      const badLine = bad.length ? `另有没下下来的：${bad.join('、')}。如实告诉花叔这几个没收到。` : '';
+      mediaNote = `\n\n[${[okLine, badLine].filter(Boolean).join('\n')}]`;
+    }
     const live = this.startLiveness(from, msg.context_token);
     let reply;
     try { reply = await this.runAgent(from, (text || '（无文字说明）') + mediaNote, live.onProgress); }
