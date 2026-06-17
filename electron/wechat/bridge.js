@@ -97,9 +97,11 @@ const bridge = {
     if (!this.conversations[cid]) this.conversations[cid] = { id: cid, label: cid === 'desktop' ? '桌面' : cid, messages: [], claudeSession: '', codexSession: '' };
     return this.conversations[cid];
   },
-  push(cid, role, text) {
+  push(cid, role, text, extra) {
     const c = this.conv(cid);
-    c.messages.push({ role, text, time: now() });
+    const m = { role, text, time: now() };
+    if (extra && extra.images && extra.images.length) m.images = extra.images; // 入站图片绝对路径，UI 直接渲染
+    c.messages.push(m);
     c.updatedAt = Date.now();        // 最近活跃时间：决定打开面板默认显示哪个会话（落盘随 persistConvos）
     if (c.messages.length > 400) c.messages = c.messages.slice(-400);
     this.persistConvos();
@@ -318,20 +320,30 @@ const bridge = {
     const { text, medias } = ilink.contentFromMsg(msg);
     if (!text && !medias.length) return;          // 真空消息才丢
     this.activeCid = from;
-    // UI/历史里展示用户发了啥；纯媒体没配文字时给个占位
-    this.push(from, 'user', text || `（${medias.map((m) => (m.kind === 'image' ? '图片' : '文件')).join('、')}）`);
-    // 媒体真读取：下载解密落盘到收件箱，把绝对路径喂给 agent 让它 Read。失败的留个原始 JSON 样本好排查。
+    // 媒体先下载解密落盘到收件箱：拿到绝对路径，既喂给 agent Read，也回填给气泡让 UI 真显示图片。
+    // 失败的留个原始 JSON 样本好排查。
     let mediaNote = '';
+    const imgPaths = [];        // 下载成功的图片，气泡直接渲染（不再只显示「（图片）」）
+    const placeholders = [];    // 没图可渲染的（文件附件 / 下载失败）才退回文字占位
     if (medias.length) {
       const ok = [], bad = [];
       for (const m of medias) {
-        try { ok.push(await ilink.downloadMedia(m.item, f('inbox'))); }
-        catch (e) { bad.push(`${m.name}（${String(e && e.message || e).slice(0, 80)}）`); this.logInbound(msg); }
+        try {
+          const fp = await ilink.downloadMedia(m.item, f('inbox'));
+          ok.push(fp);
+          if (m.kind === 'image') imgPaths.push(fp); else placeholders.push(`（${m.name}）`);
+        } catch (e) {
+          bad.push(`${m.name}（${String(e && e.message || e).slice(0, 80)}）`);
+          placeholders.push(`（${m.kind === 'image' ? '图片' : '文件'}）`);
+          this.logInbound(msg);
+        }
       }
       const okLine = ok.length ? `花叔通过微信发来${ok.length}个文件，已存到本机，请用 Read 工具直接读取来理解内容、再回应他：\n${ok.map((p) => `- ${p}`).join('\n')}` : '';
       const badLine = bad.length ? `另有没下下来的：${bad.join('、')}。如实告诉花叔这几个没收到。` : '';
       mediaNote = `\n\n[${[okLine, badLine].filter(Boolean).join('\n')}]`;
     }
+    // 气泡文字：有用户文字就用文字；没文字时退回占位（仅文件/失败图）；纯图无文字则留空，图自己就是内容
+    this.push(from, 'user', text || placeholders.join(''), imgPaths.length ? { images: imgPaths } : null);
     const live = this.startLiveness(from, msg.context_token);
     let reply;
     try { reply = await this.runAgent(from, (text || '（无文字说明）') + mediaNote, live.onProgress); }
