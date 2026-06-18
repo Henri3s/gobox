@@ -228,6 +228,7 @@ const bridge = {
     c.lastTokens = tk;
     c.ctxPeak = Math.max(c.ctxPeak || 0, tk); // 进度条用的「上下文水位」：取峰值单调爬升，避免单轮 usage 抖动让条来回跳
     if (r.cost) c.totalCost = (c.totalCost || 0) + r.cost;
+    this.logRun(cid, r); // 一行流水：耗时/重试次数/是否超时，排查链路问题时直接 cat
     this.persistConvos();
     // 抽出 <memory> ops 确定性落盘（去污染），把记忆块从展示里剥掉
     const { clean, ops } = memory.extractOps(raw);
@@ -363,6 +364,15 @@ const bridge = {
   // 入站媒体原始 JSON 落盘：用来确认图片/文件消息的字段结构，好实现 downloadMedia 真读取。
   logInbound(msg) {
     try { fs.appendFileSync(f('inbound-media.log'), JSON.stringify(msg) + '\n'); } catch { /* */ }
+  },
+  // 每轮大脑的耗时流水：定位卡顿/超时是网络还是别的，不用再事后取证。
+  logRun(cid, r) {
+    try {
+      const sec = ((r.ms || 0) / 1000).toFixed(1);
+      const tag = r.timedOut ? 'TIMEOUT' : 'ok';
+      const line = `${new Date().toISOString()}\t${this.target}\t${cid}\t${sec}s\t重试${r.attempts || 1}\t${tag}\ttokens=${r.tokens || 0}`;
+      fs.appendFileSync(f('runs.log'), line + '\n');
+    } catch { /* */ }
   },
 
   // 生命体征控制器：在 agent 跑的整段时间里维持「链路活着」的感知，回收时一次性收尾。
