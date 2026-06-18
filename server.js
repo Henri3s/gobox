@@ -1400,12 +1400,36 @@ async function serveThumb(req, res, p, size) {
   catch { res.writeHead(415); res.end('no thumb'); } // 前端 onerror 回退矢量图标
 }
 
+// HEIC/HEIF 浏览器与 Chromium 原生不支持：用 sips 全尺寸转码成 jpeg 缓存后再吐，
+// /api/raw 和 /fs/ 都透明走这条，markdown 里的 ![](x.heic) 预览即可显示。复用缩略图那套 run/缓存/LRU。
+const HEIC_EXT = new Set(['heic', 'heif']);
+async function serveHeicAsJpeg(req, res, file, st) {
+  const key = crypto.createHash('md5').update(file + ':' + st.mtimeMs).digest('hex');
+  const cacheFile = path.join(THUMB_DIR, key + '.heic.jpg');
+  const send = () => {
+    res.writeHead(200, { 'Content-Type': 'image/jpeg', 'Cache-Control': 'max-age=604800' });
+    const rs = fs.createReadStream(cacheFile);
+    rs.on('error', () => { try { res.destroy(); } catch { /* */ } });
+    rs.pipe(res);
+  };
+  if (fs.existsSync(cacheFile)) return send();
+  let pr = thumbInflight.get(cacheFile);
+  if (!pr) {
+    pr = (async () => { await fsp.mkdir(THUMB_DIR, { recursive: true }); await run('sips', ['-s', 'format', 'jpeg', file, '--out', cacheFile]); })()
+      .finally(() => thumbInflight.delete(cacheFile));
+    thumbInflight.set(cacheFile, pr);
+  }
+  try { await pr; pruneThumbs(); send(); }
+  catch { res.writeHead(415); res.end('heic transcode failed'); } // 前端 onerror 回退矢量图标
+}
+
 // 流式返回原始文件（图片 / 视频 / pdf / 音频预览），支持 Range
 function serveRaw(req, res, filePath) {
   let file;
   try { file = resolvePath(filePath); } catch { res.writeHead(400); res.end('bad path'); return; }
   fs.stat(file, (err, st) => {
     if (err || !st.isFile()) { res.writeHead(404); res.end('not found'); return; }
+    if (HEIC_EXT.has(ext(file))) return serveHeicAsJpeg(req, res, file, st); // HEIC → 转码 jpeg，绕过下面的原始字节路径
     const type = MIME[ext(file)] || 'application/octet-stream';
     const onStreamErr = (rs) => rs.on('error', () => { try { res.destroy(); } catch { /* */ } });
     const range = req.headers.range;
