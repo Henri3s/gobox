@@ -217,6 +217,9 @@ const state = {
   muted: localStorage.getItem('fb_muted') === '1', // WOW4 提示音静音开关
   changeLog: [], // 本会话 agent 改过的文件（跨所有监听目录，按文件去重、最新置顶），供「变更」面板回看
   changeTimeline: [], // 每一次写入事件（不去重，带时间戳），供「会话回放」拖时间轴重现
+  fontUI: localStorage.getItem('fb_font_ui') || '',   // 自定义界面字体（空=用 :root 默认）
+  fontMono: localStorage.getItem('fb_font_mono') || '', // 自定义代码字体（终端/编辑器，空=默认）
+  fontList: [], // 系统已安装字体清单（[{ name, fixed, kind }]），Electron 走 IPC，浏览器模式走 /api/fonts 预设
 };
 
 // ---------- 工具 ----------
@@ -2819,6 +2822,28 @@ function initSystemThemeSync() {
   }
 }
 
+// ---------- 字体选择器事件绑定 ----------
+function bindFontPicker() {
+  const u = $('#font-ui-btn'), m = $('#font-mono-btn');
+  // 点按钮：已开同 mode 则关闭，已开异 mode 则切过去，未开则打开
+  if (u) u.onclick = (e) => { e.stopPropagation(); if (fontPicker.open) { fontPicker.mode === 'ui' ? fontPicker.close() : fontPicker.openFor('ui'); } else fontPicker.openFor('ui'); };
+  if (m) m.onclick = (e) => { e.stopPropagation(); if (fontPicker.open) { fontPicker.mode === 'mono' ? fontPicker.close() : fontPicker.openFor('mono'); } else fontPicker.openFor('mono'); };
+  const pop = $('#font-popover');
+  // 点 popover 内部不冒泡（避免触发关闭）
+  pop.onclick = (e) => e.stopPropagation();
+  // 搜索框：实时过滤
+  const q = $('#font-pop-q');
+  if (q) q.oninput = () => { fontPicker.q = q.value; fontPicker.render(); };
+  // 恢复默认：清空当前 mode 的字体
+  const reset = $('.font-pop-reset');
+  if (reset) reset.onclick = () => { applyFont(fontPicker.mode, ''); fontPicker.render(); };
+  // 点外部 / ESC 关闭
+  document.addEventListener('click', () => { if (fontPicker.open) fontPicker.close(); });
+  document.addEventListener('keydown', (e) => { if (fontPicker.open && e.key === 'Escape') { fontPicker.close(); e.stopPropagation(); } });
+  // 窗口缩放：重新定位 popover（防止飘出可视区）
+  window.addEventListener('resize', () => { if (fontPicker.open) fontPicker.position(); });
+}
+
 // ---------- 主题 / 皮肤 ----------
 function applyTheme(skin, rerender = true) {
   if (!['terminal', 'warm', 'editorial', 'macos'].includes(skin)) skin = 'terminal';
@@ -2850,6 +2875,192 @@ function applyTheme(skin, rerender = true) {
     }
   }
 }
+
+// ---------- 自定义字体 ----------
+// 设计要点：用户字体放 CSS 变量最前，原回退链在后；未选字体时不注入，维持 :root 默认。
+// UI 字体覆盖 --font-ui/--font-display/--font-fname；代码字体覆盖 --font-mono/--font-term。
+// 切换后调 term.refont()/mona.refont() 热改，不销毁重建（保会话状态）。
+const FONT_FALLBACK_UI = '-apple-system, BlinkMacSystemFont, "PingFang SC", "Microsoft YaHei", "Segoe UI", "Inter", sans-serif';
+const FONT_FALLBACK_MONO = 'ui-monospace, "SF Mono", Menlo, "JetBrains Mono", monospace';
+const FONT_FALLBACK_TERM = '"JetBrainsMono Nerd Font", "MesloLGS NF", "FiraCode Nerd Font", "Hack Nerd Font", "Symbols Nerd Font Mono", ui-monospace, "SF Mono", Menlo, monospace';
+
+function applyFont(mode, name) {
+  // name 空字符串 = 恢复默认（移除覆盖，让 :root 默认值生效）
+  const root = document.documentElement;
+  if (!name) {
+    if (mode === 'ui') {
+      root.style.removeProperty('--font-ui');
+      root.style.removeProperty('--font-display');
+      root.style.removeProperty('--font-fname');
+    } else {
+      root.style.removeProperty('--font-mono');
+      root.style.removeProperty('--font-term');
+    }
+  } else {
+    // 字体名含空格或特殊字符要加引号；纯单词不加（CSS 更干净）
+    const quoted = /^[A-Za-z0-9-]+$/.test(name) ? name : `"${name}"`;
+    if (mode === 'ui') {
+      const v = `${quoted}, ${FONT_FALLBACK_UI}`;
+      root.style.setProperty('--font-ui', v);
+      root.style.setProperty('--font-display', v);   // D9：display 也跟随用户字体
+      root.style.setProperty('--font-fname', v);     // D9：fname 也跟随用户字体
+    } else {
+      root.style.setProperty('--font-mono', `${quoted}, ${FONT_FALLBACK_MONO}`);
+      root.style.setProperty('--font-term', `${quoted}, ${FONT_FALLBACK_TERM}`);
+    }
+  }
+  // 持久化：localStorage 即时（渲染层）+ config.json（Electron 菜单读）
+  const key = mode === 'ui' ? 'fb_font_ui' : 'fb_font_mono';
+  if (name) {
+    localStorage.setItem(key, name);
+    state[mode === 'ui' ? 'fontUI' : 'fontMono'] = name;
+  } else {
+    localStorage.removeItem(key);
+    state[mode === 'ui' ? 'fontUI' : 'fontMono'] = '';
+  }
+  fetch('/api/font', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ mode, name }) }).catch(() => {});
+  // 更新药丸 title，让用户知道当前用啥
+  const btn = mode === 'ui' ? $('#font-ui-btn') : $('#font-mono-btn');
+  if (btn) btn.title = (mode === 'ui' ? '界面字体' : '代码字体（终端 / 编辑器）') + (name ? `：${name}（点击切换）` : '（点击选择）');
+  // 热改已存在的终端/编辑器；首次启动时它们还没创建，创建时会读到注入后的值
+  if (typeof term !== 'undefined' && term.sessions.length && mode === 'mono') term.refont();
+  if (typeof mona !== 'undefined' && mode === 'mono') mona.refont();
+}
+
+// 启动时把持久化的字体注入回去（在 term/mona 创建前调用，让创建时读到正确值）
+function applyPersistedFont() {
+  if (state.fontUI) applyFontSilent('ui', state.fontUI);
+  if (state.fontMono) applyFontSilent('mono', state.fontMono);
+  // 同步药丸 title
+  const u = $('#font-ui-btn'), m = $('#font-mono-btn');
+  if (u) u.title = '界面字体' + (state.fontUI ? `：${state.fontUI}（点击切换）` : '（点击选择）');
+  if (m) m.title = '代码字体（终端 / 编辑器）' + (state.fontMono ? `：${state.fontMono}（点击切换）` : '（点击选择）');
+}
+// 静默注入：只改 CSS 变量，不持久化、不重渲染（启动时用，避免重复写盘和触发 refont）
+function applyFontSilent(mode, name) {
+  const root = document.documentElement;
+  const quoted = /^[A-Za-z0-9-]+$/.test(name) ? name : `"${name}"`;
+  if (mode === 'ui') {
+    const v = `${quoted}, ${FONT_FALLBACK_UI}`;
+    root.style.setProperty('--font-ui', v);
+    root.style.setProperty('--font-display', v);
+    root.style.setProperty('--font-fname', v);
+  } else {
+    root.style.setProperty('--font-mono', `${quoted}, ${FONT_FALLBACK_MONO}`);
+    root.style.setProperty('--font-term', `${quoted}, ${FONT_FALLBACK_TERM}`);
+  }
+}
+
+// ---------- 字体选择器 popover ----------
+const fontPicker = {
+  mode: null,       // 'ui' | 'mono'，当前在配哪个字体
+  open: false,
+  q: '',            // 搜索关键词
+
+  async loadList() {
+    if (state.fontList.length) return state.fontList;
+    // Electron 走 IPC 拿真实系统字体；浏览器模式走 /api/fonts 预设清单
+    if (window.fanboxFont && window.fanboxFont.list) {
+      try { state.fontList = await window.fanboxFont.list(); } catch { state.fontList = []; }
+    }
+    if (!state.fontList.length) {
+      try {
+        const r = await fetch('/api/fonts');
+        if (r.ok) state.fontList = await r.json();
+      } catch { /* */ }
+    }
+    return state.fontList;
+  },
+
+  async openFor(mode) {
+    this.mode = mode;
+    this.q = '';
+    this.open = true;
+    await this.loadList();
+    const pop = $('#font-popover');
+    const input = $('#font-pop-q');
+    if (input) input.value = '';
+    $('.font-pop-title').textContent = mode === 'ui' ? '界面字体' : '代码字体（终端 / 编辑器）';
+    this.position();
+    pop.classList.remove('hidden');
+    this.render();
+    setTimeout(() => input?.focus(), 30);
+  },
+
+  close() {
+    this.open = false;
+    $('#font-popover').classList.add('hidden');
+  },
+
+  // 锚定到触发按钮下方
+  position() {
+    const pop = $('#font-popover');
+    const btn = this.mode === 'ui' ? $('#font-ui-btn') : $('#font-mono-btn');
+    if (!btn || !pop) return;
+    const r = btn.getBoundingClientRect();
+    const pw = 280;
+    let left = r.right - pw;          // 右对齐按钮，向左展开（侧栏在左，向右会出界）
+    if (left < 8) left = 8;
+    let top = r.top - 8 - 360;        // 默认向上展开（底部按钮，列表往上长）
+    if (top < 8) top = r.bottom + 8;  // 上方空间不够则向下
+    pop.style.left = left + 'px';
+    pop.style.top = top + 'px';
+  },
+
+  // 列表过滤 + 分组排序：比例/等宽按 mode 优先级排，再按 kind(user/system/preset) 分组
+  filtered() {
+    const q = this.q.trim().toLowerCase();
+    let list = state.fontList.slice();
+    if (q) list = list.filter((f) => f.name.toLowerCase().includes(q));
+    // mode='ui'：比例优先；mode='mono'：等宽优先。都不隐藏另一类。
+    const wantFixed = this.mode === 'mono';
+    const kindOrder = { user: 0, system: 1, preset: 2 };
+    list.sort((a, b) => {
+      const fa = !!a.fixed, fb = !!b.fixed;
+      if (fa !== fb) return wantFixed ? (fa ? -1 : 1) : (fa ? 1 : -1);
+      const ka = kindOrder[a.kind] ?? 9, kb = kindOrder[b.kind] ?? 9;
+      if (ka !== kb) return ka - kb;
+      return a.name.toLowerCase() < b.name.toLowerCase() ? -1 : 1;
+    });
+    return list;
+  },
+
+  render() {
+    const ul = $('#font-pop-list');
+    if (!ul) return;
+    const list = this.filtered();
+    if (!list.length) {
+      ul.innerHTML = '<li class="font-pop-empty">没找到匹配的字体</li>';
+      return;
+    }
+    const current = this.mode === 'ui' ? state.fontUI : state.fontMono;
+    const kindOrder = ['user', 'system', 'preset'];
+    const kindLabel = { user: '已安装', system: '系统', preset: '预设' };
+    // 分组渲染：同 kind 连续出现时插一个分组小标题
+    let html = '';
+    let lastKind = null;
+    for (const f of list) {
+      if (f.kind !== lastKind && kindLabel[f.kind]) {
+        html += `<li class="font-group-label">${kindLabel[f.kind]}</li>`;
+        lastKind = f.kind;
+      }
+      const esc = f.name.replace(/'/g, "\\'").replace(/"/g, '&quot;');
+      const ff = /^[A-Za-z0-9-]+$/.test(f.name) ? f.name : `'${f.name.replace(/'/g, "\\'")}'`;
+      const active = f.name === current ? ' active' : '';
+      const tag = f.fixed ? '<span class="font-item-tag">代码</span>' : '';
+      const check = active ? '<span class="font-item-check">✓</span>' : '';
+      html += `<li class="font-item${active}" data-name="${esc}" style="font-family: ${ff}, sans-serif"><span class="font-item-name">${f.name}</span>${tag}${check}</li>`;
+    }
+    ul.innerHTML = html;
+    // 选中：点列表项 → 应用并关闭
+    ul.querySelectorAll('.font-item').forEach((li) => {
+      li.onclick = () => {
+        applyFont(this.mode, li.dataset.name);
+        this.close();
+      };
+    });
+  },
+};
 
 // ---------- 终端录像回放（黑匣子的播放端）----------
 // 保真铁律：用和 live 终端完全相同的 xterm 配置（主题/字体/unicode11/对比度）回放原始字节流，
@@ -3778,6 +3989,8 @@ const term = {
     });
   },
   retheme() { const th = this.theme(); this.sessions.forEach((s) => { s.xterm.options.theme = th; }); },
+  // 热改终端字体：xterm.options.fontFamily 支持运行时改，不销毁重建（保会话状态）。换后调 fit() 触发 WebGL glyph 重绘。
+  refont() { const ff = getComputedStyle(document.documentElement).getPropertyValue('--font-term').trim() || 'monospace'; this.sessions.forEach((s) => { s.xterm.options.fontFamily = ff; s.fit && s.fit.fit && s.fit.fit(); }); },
 };
 
 // ---------- Agent 用量面板（侧栏常驻，可开合）----------
@@ -4114,6 +4327,8 @@ const mona = {
     m.editor.defineTheme('fb-macos', { base: 'vs', inherit: true, rules: [], colors: { 'editor.background': '#ffffff', 'editor.foreground': '#1d1d1f', 'editorLineNumber.foreground': '#a1a1a6', 'editorCursor.foreground': '#0a84ff', 'editor.selectionBackground': '#0a84ff33', 'editor.lineHighlightBackground': '#00000008' } });
   },
   retheme() { if (this.editor && window.monaco) window.monaco.editor.setTheme(this.themeName()); },
+  // 热改 Monaco 字体：updateOptions 支持运行时改，主编辑器 + diff 编辑器都覆盖。
+  refont() { const ff = getComputedStyle(document.documentElement).getPropertyValue('--font-mono').trim() || 'monospace'; if (this.editor) try { this.editor.updateOptions({ fontFamily: ff }); } catch { /* */ } if (this.diffEditor) try { this.diffEditor.updateOptions({ fontFamily: ff }); } catch { /* */ } },
   // 只读并排 diff：HEAD 版本 vs 工作区当前内容，复用 editor 槽位让 disposeIfAny 统一回收
   openDiff(host, original, modified, ex) {
     const monaco = window.monaco;
@@ -4767,6 +4982,7 @@ async function init() {
   if (window.fanboxEnv && window.fanboxEnv.isDesktopApp) document.documentElement.classList.add('desktop');
   try { window.fanboxWin?.trafficLights(true); } catch { /* 重载后兜底恢复系统按钮，防上次全屏藏了没显回来 */ }
   applyTheme(state.theme, false);
+  applyPersistedFont(); // 注入持久化的自定义字体（在 term/mona 创建前，让创建时读到正确值）
   if (state.sidebarCollapsed) { $('#app').classList.add('sidebar-collapsed'); $('#btn-sidebar')?.classList.add('on'); }
   applyLayout();
   term.applyDock(); // 初始就给 #main-body 设好 dock 类，决定预览/文件管理方向
@@ -4794,6 +5010,7 @@ async function init() {
     img.src = '/fs' + encodeURI(abs);
   }, true);
   document.querySelectorAll('#theme-switch .theme-seg button').forEach((b) => { b.onclick = () => applyTheme(b.dataset.skin); });
+  bindFontPicker(); // 字体选择器：两个药丸按钮 + popover（搜索/选/恢复默认/ESC/点外部关闭）
   await loadRoots();
   await loadFavorites();
   loadAgentProjects();

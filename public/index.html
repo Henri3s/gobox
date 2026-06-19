@@ -64,7 +64,7 @@
           <button data-skin="macos" title="macOS 27 · Liquid Glass">系统</button>
         </div>
       </div>
-      <div class="sidebar-foot">本地运行 · 数据不出本机<a id="lang-toggle" class="lang-toggle"></a></div>
+      <div class="sidebar-foot"><span class="sidebar-foot-text">本地运行 · 数据不出本机</span><div class="foot-toggles"><a id="font-ui-btn" class="lang-toggle font-toggle" title="界面字体">Aa</a><a id="font-mono-btn" class="lang-toggle font-toggle" title="代码字体（终端 / 编辑器）">Aa</a><a id="lang-toggle" class="lang-toggle"></a></div></div>
       <div id="sidebar-resizer" title="拖动调整侧栏宽度"></div>
     </aside>
 
@@ -207,5 +207,14 @@
   <script src="/i18n-dict.js" onerror="window.__noDict=1"></script>
   <script src="/i18n.js"></script>
   <script src="/app.js"></script>
+  <!-- 字体选择器 popover：单实例，body 末尾避免被侧栏 overflow 裁剪 -->
+  <div id="font-popover" class="font-popover hidden" role="dialog" aria-modal="false">
+    <div class="font-pop-head">
+      <span class="font-pop-title">界面字体</span>
+      <button class="font-pop-reset" title="恢复默认">↺</button>
+    </div>
+    <div class="font-pop-search"><input type="text" id="font-pop-q" placeholder="搜索字体…" autocomplete="off" spellcheck="false"></div>
+    <ul class="font-pop-list" id="font-pop-list"></ul>
+  </div>
 </body>
 </html>

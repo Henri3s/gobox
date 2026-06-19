@@ -75,6 +75,11 @@ contextBridge.exposeInMainWorld('fanboxTheme', {
   onChanged: (cb) => { const h = (e, m) => cb(m); ipcRenderer.on('theme:changed', h); return () => ipcRenderer.removeListener('theme:changed', h); },
 });
 
+// 字体选择器：枚举系统已安装字体（含 monospace 精确判定 + user/system 标记）
+contextBridge.exposeInMainWorld('fanboxFont', {
+  list: () => ipcRenderer.invoke('fonts:list'),
+});
+
 // 微信 ClawBot：不经 openclaw，直连 iLink + 本机 claude/codex；桌面输入框也能直接和本机大脑聊
 contextBridge.exposeInMainWorld('fanboxWechat', {
   env: () => ipcRenderer.invoke('wechat:env'),            // { connected, account, target, targets, cwd, cwdName }

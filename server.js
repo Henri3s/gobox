@@ -24,6 +24,28 @@ const THUMB_DIR = path.join(CONFIG_DIR, 'thumbs');
 const PUBLIC = path.join(__dirname, 'public');
 const PLATFORM = process.platform;
 
+// 字体选择器预设清单（浏览器模式兜底用；Electron 走 IPC 拿真实系统字体）。
+// 优先列开发者常用的等宽字体，再补几个系统等宽 + 中文字体。
+const PRESET_FONTS = [
+  // 等宽（代码 / 终端）
+  { name: 'JetBrains Mono', fixed: true, kind: 'preset' },
+  { name: 'Fira Code', fixed: true, kind: 'preset' },
+  { name: 'MesloLGS NF', fixed: true, kind: 'preset' },
+  { name: 'Hack Nerd Font', fixed: true, kind: 'preset' },
+  { name: 'Cascadia Code', fixed: true, kind: 'preset' },
+  { name: 'Source Code Pro', fixed: true, kind: 'preset' },
+  { name: 'SF Mono', fixed: true, kind: 'preset' },
+  { name: 'Menlo', fixed: true, kind: 'preset' },
+  { name: 'Monaco', fixed: true, kind: 'preset' },
+  { name: 'Courier New', fixed: true, kind: 'preset' },
+  // 比例（界面）
+  { name: 'PingFang SC', fixed: false, kind: 'preset' },
+  { name: 'Helvetica Neue', fixed: false, kind: 'preset' },
+  { name: 'Inter', fixed: false, kind: 'preset' },
+  { name: 'SF Pro', fixed: false, kind: 'preset' },
+  { name: 'System Font', fixed: false, kind: 'preset' },
+];
+
 // 搜索 / 遍历时跳过的重目录，避免 vibe coding 项目里 node_modules 拖垮速度
 const IGNORE_DIRS = new Set([
   'node_modules', '.git', '.next', 'dist', 'build', '.cache', '.venv', 'venv',
@@ -2227,6 +2249,18 @@ const server = http.createServer(async (req, res) => {
       const lang = b.lang === 'en' ? 'en' : 'zh';
       await updateConfig((c) => { c.lang = lang; });
       return sendJSON(res, 200, { ok: true, lang });
+    }
+    // 字体选择器 —— 浏览器模式（node server.js）拿不到系统字体，退回硬编码预设；
+    // Electron 桌面 App 走 IPC 'fonts:list' 拿真实系统字体，不走这个端点。
+    if (p === '/api/fonts') {
+      return sendJSON(res, 200, PRESET_FONTS);
+    }
+    if (p === '/api/font' && req.method === 'POST') {
+      const b = await readBody(req);
+      const mode = b.mode === 'ui' ? 'fontUI' : (b.mode === 'mono' ? 'fontMono' : null);
+      if (!mode) return sendJSON(res, 400, { ok: false, err: 'bad mode' });
+      await updateConfig((c) => { c[mode] = typeof b.name === 'string' ? b.name : ''; });
+      return sendJSON(res, 200, { ok: true });
     }
     if (p === '/api/organize/launch' && req.method === 'POST') {
       return sendJSON(res, 200, await organizeLaunch(await readBody(req)));
