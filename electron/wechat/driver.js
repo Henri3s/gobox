@@ -9,22 +9,34 @@ const loginShell = () => process.env.SHELL || (process.platform === 'win32' ? 'p
 // 跑一条命令，prompt 写 stdin。env 复刻自用户的交互式登录 shell（见 env.js）：
 // 打包后从 Finder 启动会丢掉 PATH/代理/BASE_URL，这里补回来，子进程联网方式和用户终端一致。
 // onLine：可选，stdout 每攒满一整行就回调一次（用于流式过程播报）；不传则纯收尾解析，行为不变。
-async function run(cmd, stdinText, cwd, timeoutMs = 180000, onLine = null) {
+// 超时用「空闲」而非「总耗时」判定：agent 真干活会持续吐 stream-json 事件，永远不会长时间沉默；
+// 而代理静默挂起表现为完全无输出。所以 idleMs 内零输出=判卡死（适配任何用户的代理，不挑节点）；
+// maxMs 是防「无限循环一直吐事件」的失控 agent 的绝对天花板，不当主闸门。
+// 返回 timedOut / timeoutReason('idle'|'max')，给上层决定要不要重试（只重试 idle）。
+async function run(cmd, stdinText, cwd, opts = {}, onLine = null) {
+  const idleMs = opts.idleMs || 120000;   // 无任何输出超过这条线 → 判连接卡死
+  const maxMs = opts.maxMs || 1800000;    // 绝对上限（30min），防失控
   const env = await fullEnv();
+  const started = Date.now();
   return new Promise((resolve) => {
     const child = spawn(loginShell(), ['-lc', cmd], { cwd: cwd || env.HOME || process.env.HOME, env });
-    let out = '', err = '', done = false, lineBuf = '';
-    const finish = (r) => { if (done) return; done = true; resolve(r); };
-    const timer = setTimeout(() => { try { child.kill('SIGKILL'); } catch { /* */ } finish({ ok: false, out, err: err + '\n[超时]' }); }, timeoutMs);
+    let out = '', err = '', done = false, lineBuf = '', idleTimer = null;
+    const finish = (r) => { if (done) return; done = true; clearTimeout(idleTimer); clearTimeout(maxTimer); resolve({ ...r, ms: Date.now() - started }); };
+    const kill = (reason) => { try { child.kill('SIGKILL'); } catch { /* */ } finish({ ok: false, out, err: err + `\n[超时:${reason}]`, timedOut: true, timeoutReason: reason }); };
+    const armIdle = () => { clearTimeout(idleTimer); idleTimer = setTimeout(() => kill('idle'), idleMs); };
+    const maxTimer = setTimeout(() => kill('max'), maxMs);
+    armIdle(); // 从 spawn 起算：覆盖「首字之前」的连接挂起窗口
     child.stdout.on('data', (d) => {
+      if (done) return; // 杀进程后迟到的 data 不再处理，隔离重试之间的串扰
+      armIdle();
       const s = d.toString('utf8'); out += s;
       if (!onLine) return;
       lineBuf += s; let nl;
       while ((nl = lineBuf.indexOf('\n')) >= 0) { const line = lineBuf.slice(0, nl); lineBuf = lineBuf.slice(nl + 1); try { onLine(line); } catch { /* */ } }
     });
-    child.stderr.on('data', (d) => { err += d.toString('utf8'); });
-    child.on('error', (e) => { clearTimeout(timer); finish({ ok: false, out, err: String(e && e.message || e) }); });
-    child.on('close', (code) => { clearTimeout(timer); finish({ ok: code === 0, code, out, err }); });
+    child.stderr.on('data', (d) => { if (done) return; armIdle(); err += d.toString('utf8'); }); // stderr 也算「活着」
+    child.on('error', (e) => finish({ ok: false, out, err: String(e && e.message || e) }));
+    child.on('close', (code) => finish({ ok: code === 0, code, out, err }));
     try { child.stdin.write(stdinText || ''); child.stdin.end(); } catch { /* */ }
   });
 }
@@ -62,7 +74,7 @@ function codexNote(item) {
 
 // 检测本机有没有这个 CLI
 function which(bin) {
-  return run(`command -v ${bin} || true`, '', null, 8000).then((r) => !!(r.out || '').trim());
+  return run(`command -v ${bin} || true`, '', null, { idleMs: 8000, maxMs: 10000 }).then((r) => !!(r.out || '').trim());
 }
 
 // claude 无头：续话靠「首轮自带 --session-id <我们生成的 uuid>，之后 --resume 同一 uuid」。
@@ -72,32 +84,42 @@ async function runClaude(text, cwd, sessionId, persona, onProgress) {
   const sid = sessionId || require('crypto').randomUUID();
   const flag = sessionId ? `--resume ${sid}` : `--session-id ${sid}`;
   const sys = persona ? `--append-system-prompt ${shq(persona)}` : '';
-  const fmt = onProgress ? '--output-format stream-json --verbose' : '--output-format json';
-  const cmd = `claude -p ${fmt} --dangerously-skip-permissions ${sys} ${flag}`;
-  let result = '', outSid = sid, tokens = 0, cost = 0;
-  // 流式：逐行解析 JSONL，工具调用 → 播报，result 事件 → 拿最终文本 / session / 用量
-  const onLine = onProgress ? (line) => {
-    const t = line.trim(); if (!t || t[0] !== '{') return;
-    let o; try { o = JSON.parse(t); } catch { return; }
-    if (o.type === 'result') { result = o.result || result; outSid = o.session_id || outSid; if (o.usage) tokens = usageTokens(o.usage) || tokens; if (o.total_cost_usd != null) cost = o.total_cost_usd; return; }
-    if (o.type === 'assistant' && o.message && Array.isArray(o.message.content)) {
-      for (const b of o.message.content) { if (b.type === 'tool_use') { const p = progressNote(b.name, b.input); if (p) onProgress(p); } }
+  // 一律走 stream-json：持续吐事件，空闲超时才有活动信号可依（非流式 json 整轮沉默会被误杀）。
+  const cmd = `claude -p --output-format stream-json --verbose --dangerously-skip-permissions ${sys} ${flag}`;
+  let result = '', outSid = sid, tokens = 0, cost = 0, r, ms = 0, attempts = 0;
+  // 空闲卡死（连接挂起）→ 换新进程=新连接重试，最多 3 次（首次 + 2 重试）。每次清空累计，避免串数据。
+  for (attempts = 1; attempts <= 3; attempts++) {
+    result = ''; outSid = sid; tokens = 0; cost = 0;
+    // 逐行解析 JSONL：result 事件 → 最终文本/session/用量；工具调用 → 播报（仅传了 onProgress 时）
+    const onLine = (line) => {
+      const t = line.trim(); if (!t || t[0] !== '{') return;
+      let o; try { o = JSON.parse(t); } catch { return; }
+      if (o.type === 'result') { result = o.result || result; outSid = o.session_id || outSid; if (o.usage) tokens = usageTokens(o.usage) || tokens; if (o.total_cost_usd != null) cost = o.total_cost_usd; return; }
+      if (onProgress && o.type === 'assistant' && o.message && Array.isArray(o.message.content)) {
+        for (const b of o.message.content) { if (b.type === 'tool_use') { const p = progressNote(b.name, b.input); if (p) onProgress(p); } }
+      }
+    };
+    if (attempts > 1 && onProgress) onProgress('（连接卡住，正在重连重试…）');
+    r = await run(cmd, text, cwd, { idleMs: 120000, maxMs: 1800000 }, onLine);
+    ms += r.ms || 0;
+    if (!result) {
+      // onLine 漏抓 result 事件 → 兜底再扫一遍全部输出
+      for (const line of (r.out || '').split('\n')) { const t = line.trim(); if (t[0] !== '{') continue; let o; try { o = JSON.parse(t); } catch { continue; } if (o.type === 'result') { result = o.result || result; outSid = o.session_id || outSid; if (o.usage) tokens = usageTokens(o.usage) || tokens; if (o.total_cost_usd != null) cost = o.total_cost_usd; } }
     }
-  } : null;
-  const r = await run(cmd, text, cwd, 600000, onLine);
-  if (!onProgress) {
-    try { const j = JSON.parse((r.out || '').trim()); result = j.result || j.text || ''; outSid = j.session_id || sid; if (j.usage) tokens = usageTokens(j.usage); if (j.total_cost_usd != null) cost = j.total_cost_usd; }
-    catch { result = (r.out || '').trim(); } // 非 JSON 兜底
-  } else if (!result) {
-    // 流式没抓到 result 事件 → 兜底再扫一遍全部输出
-    for (const line of (r.out || '').split('\n')) { const t = line.trim(); if (t[0] !== '{') continue; let o; try { o = JSON.parse(t); } catch { continue; } if (o.type === 'result') { result = o.result || result; outSid = o.session_id || outSid; if (o.usage) tokens = usageTokens(o.usage) || tokens; if (o.total_cost_usd != null) cost = o.total_cost_usd; } }
+    // 只在「空闲卡死且没拿到结果」时重试；撞绝对天花板(max)或已有结果都不重试
+    if (r.timeoutReason === 'idle' && !result && attempts < 3) continue;
+    break;
   }
   // resume 的会话失效（旧 id / 过期）→ 自动起新会话重试一次，别把报错甩给用户
   if (sessionId && /No conversation found|session.*not found/i.test(result + ' ' + (r.err || ''))) {
     return runClaude(text, cwd, null, persona, onProgress);
   }
-  if (!result && !r.ok) result = `（claude 出错）${(r.err || '').trim().slice(-300)}`;
-  return { text: result || '（没有返回内容）', sessionId: outSid, tokens, cost };
+  if (!result && !r.ok) {
+    result = r.timedOut
+      ? `（claude 出错）连接超时，已重试 ${attempts} 次仍无响应——检查下网络/代理`
+      : `（claude 出错）${(r.err || '').trim().slice(-300)}`;
+  }
+  return { text: result || '（没有返回内容）', sessionId: outSid, tokens, cost, ms, attempts, timedOut: !!r.timedOut };
 }
 
 // codex 无头：首轮 `codex exec` 建会话并从 thread.started 抓 thread_id；之后 `codex exec resume <id> -` 续上下文（codex 0.139+）。
@@ -114,21 +136,29 @@ async function runCodex(text, cwd, persona, sessionId, onProgress) {
     const ty = (item.type || o.type || '').toLowerCase();
     if (/command|exec|tool|function|patch|file/.test(ty)) { const n = codexNote(item); if (n) onProgress(n); }
   } : null;
-  const r = await run(cmd, stdin, cwd, 600000, onLine);
-  // --json 输出 JSONL 事件：抓 thread_id + 最终 assistant 文本（后到的覆盖前面）+ 用量（取最大，事件多为累计）
-  let result = '', outSid = sessionId || '', tokens = 0;
-  for (const line of (r.out || '').split('\n')) {
-    const t = line.trim(); if (!t || t[0] !== '{') continue;
-    let o; try { o = JSON.parse(t); } catch { continue; }
-    if (o.type === 'thread.started' && o.thread_id) outSid = o.thread_id;
-    const item = o.item || o.msg || o;
-    const ty = item.type || o.type || '';
-    const u = o.usage || item.usage || (/token|usage/i.test(ty) ? (item || o) : null);
-    if (u) { const tk = usageTokens(u); if (tk > tokens) tokens = tk; } // codex 用量事件结构不稳，尽力抓、取最大
-    if (/agent_message|assistant|message\.completed|item\.completed/i.test(ty)) {
-      const txt = item.text || item.message || (item.content && item.content.text) || '';
-      if (txt && typeof txt === 'string') result = txt;
+  let result = '', outSid = sessionId || '', tokens = 0, r, ms = 0, attempts = 0;
+  // 空闲卡死（连接挂起）→ 换新进程=新连接重试，最多 3 次（首次 + 2 重试）
+  for (attempts = 1; attempts <= 3; attempts++) {
+    result = ''; outSid = sessionId || ''; tokens = 0;
+    if (attempts > 1 && onProgress) onProgress('（连接卡住，正在重连重试…）');
+    r = await run(cmd, stdin, cwd, { idleMs: 120000, maxMs: 1800000 }, onLine);
+    ms += r.ms || 0;
+    // --json 输出 JSONL 事件：抓 thread_id + 最终 assistant 文本（后到的覆盖前面）+ 用量（取最大，事件多为累计）
+    for (const line of (r.out || '').split('\n')) {
+      const t = line.trim(); if (!t || t[0] !== '{') continue;
+      let o; try { o = JSON.parse(t); } catch { continue; }
+      if (o.type === 'thread.started' && o.thread_id) outSid = o.thread_id;
+      const item = o.item || o.msg || o;
+      const ty = item.type || o.type || '';
+      const u = o.usage || item.usage || (/token|usage/i.test(ty) ? (item || o) : null);
+      if (u) { const tk = usageTokens(u); if (tk > tokens) tokens = tk; } // codex 用量事件结构不稳，尽力抓、取最大
+      if (/agent_message|assistant|message\.completed|item\.completed/i.test(ty)) {
+        const txt = item.text || item.message || (item.content && item.content.text) || '';
+        if (txt && typeof txt === 'string') result = txt;
+      }
     }
+    if (r.timeoutReason === 'idle' && !result && attempts < 3) continue;
+    break;
   }
   // resume 的会话失效（旧 id / 落盘被清）→ 自动起新会话重试一次，别把报错甩给用户
   if (sessionId && !result && /No .*session|not found|no conversation|无.*会话/i.test(r.err || r.out || '')) {
@@ -138,8 +168,12 @@ async function runCodex(text, cwd, persona, sessionId, onProgress) {
     const parts = stripAnsi(r.out || '').split(/-{6,}/);
     result = (parts[parts.length - 1] || '').replace(/^\s*user[\s\S]*?\n/i, '').trim();
   }
-  if (!result && !r.ok) result = `（codex 出错）${stripAnsi(r.err || r.out || '').trim().slice(-300)}`;
-  return { text: result || '（没有返回内容）', sessionId: outSid, tokens, cost: 0 };
+  if (!result && !r.ok) {
+    result = r.timedOut
+      ? `（codex 出错）连接超时，已重试 ${attempts} 次仍无响应——检查下网络/代理`
+      : `（codex 出错）${stripAnsi(r.err || r.out || '').trim().slice(-300)}`;
+  }
+  return { text: result || '（没有返回内容）', sessionId: outSid, tokens, cost: 0, ms, attempts, timedOut: !!r.timedOut };
 }
 
 function stripAnsi(s) { return s.replace(/\[[0-9;]*m/g, ''); }

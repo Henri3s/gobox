@@ -168,7 +168,7 @@ const bridge = {
     const id = cid || this.latestCid();            // 不指定就取最近活跃会话，别再写死回 desktop
     this.activeCid = id;                            // 同步活跃会话，让后续推送的 emit 门控跟着当前展示的线走
     const c = this.conv(id);
-    return { ok: true, id: c.id, messages: c.messages, tokens: c.lastTokens || 0, budget: CTX_BUDGET };
+    return { ok: true, id: c.id, messages: c.messages, tokens: c.ctxPeak || c.lastTokens || 0, budget: CTX_BUDGET };
   },
 
   // 本机其他终端实时状态：花名册（编号/目录/进程/忙闲）+ 最近输出尾巴，注入给 agent 感知
@@ -226,7 +226,9 @@ const bridge = {
     let tk = r.tokens || 0;
     if (!tk) { const chars = (c.messages || []).reduce((s, m) => s + (m.text ? m.text.length : 0), 0); tk = Math.round(chars / 3); }
     c.lastTokens = tk;
+    c.ctxPeak = Math.max(c.ctxPeak || 0, tk); // 进度条用的「上下文水位」：取峰值单调爬升，避免单轮 usage 抖动让条来回跳
     if (r.cost) c.totalCost = (c.totalCost || 0) + r.cost;
+    this.logRun(cid, r); // 一行流水：耗时/重试次数/是否超时，排查链路问题时直接 cat
     this.persistConvos();
     // 抽出 <memory> ops 确定性落盘（去污染），把记忆块从展示里剥掉
     const { clean, ops } = memory.extractOps(raw);
@@ -248,7 +250,7 @@ const bridge = {
     const recap = await this.memoryFlush(cid);
     c.claudeSession = ''; c.codexSession = '';
     c.pendingRecap = recap || '';
-    c.lastTokens = 0;
+    c.lastTokens = 0; c.ctxPeak = 0; // 整理后水位回落
     this.push(cid, 'system', auto ? '🧹 已自动整理上下文（旧对话归档进记忆，继续聊不受影响）' : '🧹 已整理上下文，旧对话归档进记忆，可继续聊');
     return { ok: true };
   },
@@ -257,7 +259,7 @@ const bridge = {
     const id = cid || this.activeCid;
     const c = this.conv(id);
     if (c.claudeSession || c.codexSession) { try { await this.memoryFlush(id); } catch { /* 失败也照样开新的 */ } }
-    c.claudeSession = ''; c.codexSession = ''; c.pendingRecap = ''; c.lastTokens = 0;
+    c.claudeSession = ''; c.codexSession = ''; c.pendingRecap = ''; c.lastTokens = 0; c.ctxPeak = 0;
     this.push(id, 'system', '—— 新对话 ——');
     return { ok: true };
   },
@@ -362,6 +364,15 @@ const bridge = {
   // 入站媒体原始 JSON 落盘：用来确认图片/文件消息的字段结构，好实现 downloadMedia 真读取。
   logInbound(msg) {
     try { fs.appendFileSync(f('inbound-media.log'), JSON.stringify(msg) + '\n'); } catch { /* */ }
+  },
+  // 每轮大脑的耗时流水：定位卡顿/超时是网络还是别的，不用再事后取证。
+  logRun(cid, r) {
+    try {
+      const sec = ((r.ms || 0) / 1000).toFixed(1);
+      const tag = r.timedOut ? 'TIMEOUT' : 'ok';
+      const line = `${new Date().toISOString()}\t${this.target}\t${cid}\t${sec}s\t重试${r.attempts || 1}\t${tag}\ttokens=${r.tokens || 0}`;
+      fs.appendFileSync(f('runs.log'), line + '\n');
+    } catch { /* */ }
   },
 
   // 生命体征控制器：在 agent 跑的整段时间里维持「链路活着」的感知，回收时一次性收尾。
