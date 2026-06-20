@@ -723,21 +723,17 @@ kbd {
 /* 语言切换 */
 .sidebar-foot { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
 .sidebar-foot-text { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.foot-toggles { display: flex; gap: 4px; align-items: center; flex: none; }
 .lang-toggle { cursor: pointer; color: var(--text-dim); font-size: 10.5px; padding: 1px 6px; border: 1px solid var(--border); border-radius: 5px; flex: none; }
 .lang-toggle:hover { color: var(--accent); border-color: var(--accent); }
-/* 字体选择器药丸：继承 .lang-toggle，独立钩子方便后续微调 */
-.font-toggle { font-weight: 600; }
-/* 底部药丸的 tooltip 往上显示 + 限宽换行：按钮贴 sidebar 底部，tooltip 往下溢出会触发滚动条抖动循环；
-   限宽防止长文本（含字体名）水平撑爆引起布局抖动。tooltip 不随用户字体变（用系统字体），避免自定义字体后尺寸跳变 */
-.font-toggle[data-tip]:hover::after,
-.foot-toggles .lang-toggle[data-tip]:hover::after {
-  top: auto; bottom: calc(100% + 7px);
-  max-width: 160px; white-space: normal; text-align: center;
-  font-family: -apple-system, BlinkMacSystemFont, sans-serif;
-}
-.font-toggle[data-tip]:hover::before,
-.foot-toggles .lang-toggle[data-tip]:hover::before { top: auto; bottom: calc(100% + 2px); border-bottom-color: transparent; border-top-color: var(--text); }
+
+/* 字体选择区块：放在皮肤下方，同款风格（label + 分段按钮） */
+.font-switch { padding: 6px 8px 8px; }
+.font-seg { display: flex; gap: 6px; }
+.font-seg .font-toggle { flex: 1; border: 1px solid var(--border); border-radius: 7px; background: var(--bg-3); color: var(--text-dim); padding: 6px 4px; font-size: 13px; font-weight: 600; cursor: pointer; font-family: var(--font-ui); transition: 0.12s; }
+.font-seg .font-toggle:hover { color: var(--accent); border-color: var(--accent); }
+.font-seg .font-toggle.active { color: var(--accent); border-color: var(--accent); }
+/* 字体按钮 tooltip：往下显示（按钮在侧栏中部，下方有空间），限宽换行 + 系统字体防跳变 */
+.font-toggle[data-tip]:hover::after { max-width: 160px; white-space: normal; text-align: center; font-family: -apple-system, BlinkMacSystemFont, sans-serif; }
 
 /* 字体选择器 popover：复用 .shot-card 的玻璃浮层风格，走 CSS 变量让 4 套皮肤自动适配 */
 .font-popover.hidden { display: none; }
