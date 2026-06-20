@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
-# fanbox 每周自动推送（由 launchd 周六 10:00 触发）
+# gobox 每周自动推送（由 launchd 周六 10:00 触发）
 # 策略：master 普通 push；feat/auto-tidy 用 --force-with-lease（origin 是个人 fork）。
 # 安全：只有确实有未推送提交才推；结束切回原分支；全流程写日志。
 set -uo pipefail
 
-REPO="/Users/henri/Documents/Mac App/gotooa"
-LOG="$HOME/Library/Logs/fanbox-push.log"
+REPO="/Users/henri/Documents/Mac App/gobox"
+LOG="$HOME/Library/Logs/gobox-push.log"
 BR_MASTER="master"
 BR_FEATURE="feat/auto-tidy"
 EXIT_CODE=0

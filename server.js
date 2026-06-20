@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * FanBox — 本地文件指挥中心后端
+ * Gobox — 本地文件指挥中心后端
  *
  * 纯 Node 内置模块，零依赖。只绑定 127.0.0.1，浏览器界面是唯一入口。
  * 这是一个本地个人工具：你的机器、你的文件，服务只在本机回环地址监听。
@@ -18,8 +18,8 @@ const { URL } = require('url');
 
 const HOME = os.homedir();
 const PORT = Number(process.env.FANBOX_PORT) || 4567;
-// fork 隔离：dev 模式(GOTOOA_DEV=1)配置存 ~/.gotooa，和正式版 ~/.fanbox 分开
-const CONFIG_DIR = path.join(HOME, process.env.GOTOOA_DEV ? '.gotooa' : '.fanbox');
+// fork 隔离：dev 模式(GOBOX_DEV=1)配置存 ~/.gobox-dev，和正式版 ~/.gobox 分开
+const CONFIG_DIR = path.join(HOME, process.env.GOBOX_DEV ? '.gobox-dev' : '.gobox');
 const CONFIG_FILE = path.join(CONFIG_DIR, 'config.json');
 const THUMB_DIR = path.join(CONFIG_DIR, 'thumbs');
 const PUBLIC = path.join(__dirname, 'public');
@@ -479,7 +479,7 @@ function trashPath(p) {
       let msg = err.message;
       // Finder 自动化未授权（-1743/-600）给人话
       if (PLATFORM === 'darwin' && /-1743|-600|not allowed|authoriz/i.test(msg)) {
-        msg = '需在「系统设置 → 隐私与安全性 → 自动化」里允许 FanBox 控制 Finder（首次删除会弹授权）';
+        msg = '需在「系统设置 → 隐私与安全性 → 自动化」里允许 Gobox 控制 Finder（首次删除会弹授权）';
       }
       resolve({ ok: false, error: msg });
     });
@@ -572,7 +572,7 @@ async function organizeLaunch(b) {
   }
   const prefs = await fsp.readFile(ORGANIZE_PREFS_FILE, 'utf8').catch(() => '');
   const history = await organizeHistory();
-  const brief = `# AI 整理任务（翻箱 FanBox 生成，每次启动覆盖本文件）
+  const brief = `# AI 整理任务（翻箱 Gobox 生成，每次启动覆盖本文件）
 
 你在翻箱的内嵌终端里，帮用户对话式整理这个文件夹：${dir}
 
@@ -2413,7 +2413,7 @@ const server = http.createServer(async (req, res) => {
 
 server.on('error', (err) => {
   if (err.code === 'EADDRINUSE') {
-    console.error(`\n  ⚠️  端口 ${PORT} 已被占用——FanBox 很可能已经在运行了。`);
+    console.error(`\n  ⚠️  端口 ${PORT} 已被占用——Gobox 很可能已经在运行了。`);
     console.error(`      直接打开浏览器访问  http://localhost:${PORT}  就行；`);
     console.error(`      想另开一个，换端口：FANBOX_PORT=8080 node server.js\n`);
   } else {

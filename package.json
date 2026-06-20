@@ -1,15 +1,15 @@
 {
-  "name": "fanbox",
-  "version": "2.3.1",
-  "description": "FanBox — the cockpit for coding agents. Command Claude Code or Codex, watch every file and line they change, and take over anytime.",
+  "name": "gobox",
+  "version": "1.0.0",
+  "description": "Gobox — the cockpit for coding agents. Command Claude Code or Codex, watch every file and line they change, and take over anytime.",
   "bin": {
-    "fanbox": "server.js"
+    "gobox": "server.js"
   },
   "main": "electron/main.js",
   "scripts": {
     "start": "node server.js",
     "app": "electron .",
-    "app:dev": "GOTOOA_DEV=1 electron .",
+    "app:dev": "GOBOX_DEV=1 electron .",
     "rebuild": "electron-rebuild -f -w node-pty",
     "build:milkdown": "esbuild src-vendor/milkdown-entry.js --bundle --format=iife --minify --outfile=public/vendor/milkdown/milkdown.js --loader:.svg=dataurl --loader:.woff=file --loader:.woff2=file --loader:.ttf=file --loader:.eot=file --asset-names=[name]",
     "build:hljs": "esbuild src-vendor/hljs-entry.js --bundle --format=iife --minify --outfile=public/vendor/hljs/highlight.js && cp node_modules/marked/marked.min.js public/vendor/marked/marked.min.js && cp node_modules/highlight.js/styles/github-dark.min.css node_modules/highlight.js/styles/github.min.css public/vendor/hljs/styles/",
@@ -18,12 +18,13 @@
     "dist": "electron-builder --mac"
   },
   "build": {
-    "appId": "com.huashu.fanbox",
-    "productName": "FanBox",
+    "appId": "com.gotooa.gobox",
+    "productName": "Gobox",
     "directories": {
       "buildResources": "build",
       "output": "dist"
     },
+    "artifactName": "Gobox-${version}-${arch}.${ext}",
     "asar": true,
     "npmRebuild": false,
     "asarUnpack": [
@@ -45,7 +46,7 @@
       ]
     },
     "dmg": {
-      "title": "FanBox",
+      "title": "Gobox",
       "writeUpdateInfo": false
     }
   },

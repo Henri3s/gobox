@@ -1,6 +1,6 @@
 'use strict';
 /**
- * FanBox — Electron 主进程
+ * Gobox — Electron 主进程
  *
  * 复用零依赖后端 server.js（文件能力），叠加 node-pty 内嵌终端，
  * 让 TUI coding agent（Claude Code / Codex / Aider…）在界面里直接跑起来。
@@ -78,9 +78,9 @@ app.whenReady().then(() => {
   if (process.platform === 'darwin' && app.dock) {
     try { app.dock.setIcon(nativeImage.createFromPath(path.join(__dirname, '..', 'build', 'icon.png'))); } catch { /* */ }
   }
-  // fork 隔离：GOTOOA_DEV=1 时 app.name 用 'gotooa'，userData/缓存自动切到 ~/Library/Application Support/gotooa，
-  // 与已安装的 /Applications/FanBox.app 彻底分开，不再撞缓存显示旧界面。原 'FanBox' 保留给正式打包版。
-  app.setName(process.env.GOTOOA_DEV ? 'gotooa' : 'FanBox');
+  // fork 隔离：GOBOX_DEV=1 时 app.name 用 'gobox-dev'，userData/缓存自动切到 ~/Library/Application Support/gobox-dev，
+  // 与已安装的 /Applications/Gobox.app 分开，dev 实例不撞正式版缓存显示旧界面。
+  app.setName(process.env.GOBOX_DEV ? 'gobox-dev' : 'Gobox');
   // 后端跑在 localhost，访问它永不该走代理。个别环境（clash 强制系统代理、企业 PAC 把 loopback 也代理）
   // 会把本地请求拦成 502 → 整个界面白屏。给 loopback 显式加旁路；其余（如查更新走 GitHub）仍按系统代理，互不影响。
   session.defaultSession.setProxy({ mode: 'system', proxyBypassRules: 'localhost;127.0.0.1;[::1]' }).catch(() => { /* 设置失败就退回默认行为，不影响启动 */ });
@@ -157,20 +157,20 @@ function cmpVer(a, b) {
   for (let i = 0; i < 3; i++) { const d = (pa[i] || 0) - (pb[i] || 0); if (d) return d; }
   return 0;
 }
-const REL_PAGE = 'https://github.com/alchaincyf/fanbox/releases/latest';
+const REL_PAGE = 'https://github.com/Henri3s/gobox/releases/latest';
 async function fetchLatestRelease() {
   // 先走 API（信息全）；代理共享出口 IP 很容易吃 GitHub API 的未认证限流（60 次/小时/IP，403），
   // 失败就退回抓 releases/latest 网页重定向——重定向后的 URL 自带 tag，且不占 API 配额
   try {
-    const res = await net.fetch('https://api.github.com/repos/alchaincyf/fanbox/releases/latest', {
-      headers: { 'User-Agent': 'fanbox-app', Accept: 'application/vnd.github+json' },
+    const res = await net.fetch('https://api.github.com/repos/Henri3s/gobox/releases/latest', {
+      headers: { 'User-Agent': 'gobox-app', Accept: 'application/vnd.github+json' },
     });
     if (res.ok) {
       const rel = await res.json();
       if (rel.tag_name) return { tag: rel.tag_name, url: rel.html_url || REL_PAGE };
     }
   } catch { /* 走兜底 */ }
-  const res = await net.fetch(REL_PAGE, { headers: { 'User-Agent': 'fanbox-app' } });
+  const res = await net.fetch(REL_PAGE, { headers: { 'User-Agent': 'gobox-app' } });
   const m = String(res.url || '').match(/\/releases\/tag\/([^/?#]+)/);
   if (m) return { tag: decodeURIComponent(m[1]), url: res.url };
   return null;
@@ -266,8 +266,8 @@ const M = (zh, en) => (uiLang() === 'zh' ? zh : en);
 // 唯一手段是 `pmset -a disablesleep 1`（需 root）。为避免智能模式反复弹密码，首次开启时装一条
 // 仅限 pmset disablesleep 0/1 的 sudoers 免密规则，之后静默切换。
 // 智能模式：只有「开关开 且 有终端在跑」才真正禁休眠；终端全退/退出 app 立即恢复，绝不让 Mac 一直不睡。
-// fork 隔离：dev 模式配置存 ~/.gotooa，和正式版 ~/.fanbox 分开（电源开关等用户偏好各走各的）
-const CONFIG = path.join(os.homedir(), process.env.GOTOOA_DEV ? '.gotooa' : '.fanbox', 'config.json');
+// fork 隔离：dev 模式配置存 ~/.gobox-dev，和正式版 ~/.gobox 分开（电源开关等用户偏好各走各的）
+const CONFIG = path.join(os.homedir(), process.env.GOBOX_DEV ? '.gobox-dev' : '.gobox', 'config.json');
 function readConfig() { try { return JSON.parse(fs.readFileSync(CONFIG, 'utf8')); } catch { return {}; } }
 function writeConfig(patch) {
   try { const c = readConfig(); Object.assign(c, patch); fs.mkdirSync(path.dirname(CONFIG), { recursive: true }); fs.writeFileSync(CONFIG, JSON.stringify(c, null, 2)); }
@@ -347,7 +347,7 @@ async function setLidIntent(on) {
       type: 'warning', buttons: [M('开启', 'Enable'), M('取消', 'Cancel')], defaultId: 0, cancelId: 1,
       message: M('合盖后继续运行', 'Keep running with lid closed'),
       detail: M('开启后，只要还有终端会话在跑，合上盖子也不会休眠——agent 任务能接着干。\n\n注意：合盖期间持续耗电发热，建议接电源。终端全部退出或退出翻箱时自动恢复正常休眠。\n\n首次开启需输入一次管理员密码（装一条仅限电源设置的免密规则）。',
-        'While any terminal session is running, closing the lid won\'t sleep the Mac — your agent tasks keep going.\n\nNote: it keeps drawing power and heat while closed; stay plugged in. Normal sleep is restored once all terminals exit or you quit FanBox.\n\nFirst time needs your admin password once (installs a power-only passwordless rule).'),
+        'While any terminal session is running, closing the lid won\'t sleep the Mac — your agent tasks keep going.\n\nNote: it keeps drawing power and heat while closed; stay plugged in. Normal sleep is restored once all terminals exit or you quit Gobox.\n\nFirst time needs your admin password once (installs a power-only passwordless rule).'),
     });
     console.log('[lid] warning dialog choice =', choice, '(0=开启)');
     if (choice !== 0) { buildMenu(); return; } // 取消 → 复位勾选
@@ -370,13 +370,13 @@ async function setLidIntent(on) {
 function buildMenu() {
   const isMac = process.platform === 'darwin';
   const template = [
-    ...(isMac ? [{ label: 'FanBox', submenu: [
-      { role: 'about', label: M('关于 FanBox', 'About FanBox') },
+    ...(isMac ? [{ label: 'Gobox', submenu: [
+      { role: 'about', label: M('关于 Gobox', 'About Gobox') },
       { label: M('检查更新…', 'Check for Updates…'), click: () => checkUpdate({ manual: true }) },
       { type: 'separator' },
-      { role: 'hide', label: M('隐藏 FanBox', 'Hide FanBox') }, { role: 'hideOthers', label: M('隐藏其他', 'Hide Others') }, { role: 'unhide', label: M('全部显示', 'Show All') },
+      { role: 'hide', label: M('隐藏 Gobox', 'Hide Gobox') }, { role: 'hideOthers', label: M('隐藏其他', 'Hide Others') }, { role: 'unhide', label: M('全部显示', 'Show All') },
       { type: 'separator' },
-      { role: 'quit', label: M('退出 FanBox', 'Quit FanBox') },
+      { role: 'quit', label: M('退出 Gobox', 'Quit Gobox') },
     ] }] : []),
     { label: M('文件', 'File'), submenu: [
       ...(isMac ? [] : [{ label: M('检查更新…', 'Check for Updates…'), click: () => checkUpdate({ manual: true }) }, { type: 'separator' }]),
