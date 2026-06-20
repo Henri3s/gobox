@@ -78,7 +78,9 @@ app.whenReady().then(() => {
   if (process.platform === 'darwin' && app.dock) {
     try { app.dock.setIcon(nativeImage.createFromPath(path.join(__dirname, '..', 'build', 'icon.png'))); } catch { /* */ }
   }
-  app.setName('FanBox');
+  // fork 隔离：GOTOOA_DEV=1 时 app.name 用 'gotooa'，userData/缓存自动切到 ~/Library/Application Support/gotooa，
+  // 与已安装的 /Applications/FanBox.app 彻底分开，不再撞缓存显示旧界面。原 'FanBox' 保留给正式打包版。
+  app.setName(process.env.GOTOOA_DEV ? 'gotooa' : 'FanBox');
   // 后端跑在 localhost，访问它永不该走代理。个别环境（clash 强制系统代理、企业 PAC 把 loopback 也代理）
   // 会把本地请求拦成 502 → 整个界面白屏。给 loopback 显式加旁路；其余（如查更新走 GitHub）仍按系统代理，互不影响。
   session.defaultSession.setProxy({ mode: 'system', proxyBypassRules: 'localhost;127.0.0.1;[::1]' }).catch(() => { /* 设置失败就退回默认行为，不影响启动 */ });
@@ -230,10 +232,10 @@ ipcMain.handle('win:traffic', (e, { show }) => {
   win.setWindowButtonVisibility(!!show);
 });
 
-// 界面语言：用户手动选过的存在 ~/.fanbox/config.json（渲染层切换时写入），没选过跟随系统
+// 界面语言：用户手动选过的存在配置文件（渲染层切换时写入），没选过跟随系统
 function uiLang() {
   try {
-    const c = JSON.parse(fs.readFileSync(path.join(os.homedir(), '.fanbox', 'config.json'), 'utf8'));
+    const c = JSON.parse(fs.readFileSync(CONFIG, 'utf8'));
     if (c.lang === 'zh' || c.lang === 'en') return c.lang;
   } catch { /* 没配置过 */ }
   return String(app.getLocale() || '').toLowerCase().startsWith('zh') ? 'zh' : 'en';
@@ -245,7 +247,8 @@ const M = (zh, en) => (uiLang() === 'zh' ? zh : en);
 // 唯一手段是 `pmset -a disablesleep 1`（需 root）。为避免智能模式反复弹密码，首次开启时装一条
 // 仅限 pmset disablesleep 0/1 的 sudoers 免密规则，之后静默切换。
 // 智能模式：只有「开关开 且 有终端在跑」才真正禁休眠；终端全退/退出 app 立即恢复，绝不让 Mac 一直不睡。
-const CONFIG = path.join(os.homedir(), '.fanbox', 'config.json');
+// fork 隔离：dev 模式配置存 ~/.gotooa，和正式版 ~/.fanbox 分开（电源开关等用户偏好各走各的）
+const CONFIG = path.join(os.homedir(), process.env.GOTOOA_DEV ? '.gotooa' : '.fanbox', 'config.json');
 function readConfig() { try { return JSON.parse(fs.readFileSync(CONFIG, 'utf8')); } catch { return {}; } }
 function writeConfig(patch) {
   try { const c = readConfig(); Object.assign(c, patch); fs.mkdirSync(path.dirname(CONFIG), { recursive: true }); fs.writeFileSync(CONFIG, JSON.stringify(c, null, 2)); }

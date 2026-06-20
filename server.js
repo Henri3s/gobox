@@ -18,7 +18,8 @@ const { URL } = require('url');
 
 const HOME = os.homedir();
 const PORT = Number(process.env.FANBOX_PORT) || 4567;
-const CONFIG_DIR = path.join(HOME, '.fanbox');
+// fork 隔离：dev 模式(GOTOOA_DEV=1)配置存 ~/.gotooa，和正式版 ~/.fanbox 分开
+const CONFIG_DIR = path.join(HOME, process.env.GOTOOA_DEV ? '.gotooa' : '.fanbox');
 const CONFIG_FILE = path.join(CONFIG_DIR, 'config.json');
 const THUMB_DIR = path.join(CONFIG_DIR, 'thumbs');
 const PUBLIC = path.join(__dirname, 'public');
@@ -1154,9 +1155,25 @@ async function serveStatic(req, res, urlPath) {
   const filePath = path.normalize(path.join(PUBLIC, rel));
   // 边界要带分隔符，否则 /path/to/public-evil 也会 startsWith('/path/to/public') 通过
   if (filePath !== PUBLIC && !filePath.startsWith(PUBLIC + path.sep)) { res.writeHead(403); res.end('forbidden'); return; }
+  let st;
+  try { st = await fsp.stat(filePath); } catch { res.writeHead(404); res.end('not found'); return; }
+  // 条件请求：用 mtime + size 拼一个弱 ETag，配合 Last-Modified 让 Chromium 走 304。
+  // 没这层时，/style.css、/app.js 这种固定 URL 会被永久缓存——改完前端不重启缓存就显示旧界面。
+  const etag = `W/"${st.size}-${st.mtimeMs}"`;
+  const lastMod = new Date(st.mtimeMs).toUTCString();
+  if (req.headers['if-none-match'] === etag || req.headers['if-modified-since'] === lastMod) {
+    res.writeHead(304); res.end(); return;
+  }
   try {
     const data = await fsp.readFile(filePath);
-    res.writeHead(200, { 'Content-Type': MIME[ext(filePath)] || 'application/octet-stream' });
+    res.writeHead(200, {
+      'Content-Type': MIME[ext(filePath)] || 'application/octet-stream',
+      'ETag': etag,
+      'Last-Modified': lastMod,
+      // no-cache = 每次回源校验（带 If-None-Match），命中就走 304 零字节；不是「不缓存」。
+      // 这样既能立刻刷掉刚改的前端，又不让每次都重传整份 CSS/JS。
+      'Cache-Control': 'no-cache',
+    });
     res.end(data);
   } catch {
     res.writeHead(404); res.end('not found');
