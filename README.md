@@ -1,23 +1,29 @@
 <div align="center">
 
-# 📦 FanBox
+# 📦 Gobox
 
-<img src="assets/promo-banner.jpg" alt="FanBox · Coding Agent 的驾驶舱" width="100%">
+<img src="assets/promo-banner.jpg" alt="Gobox · Coding Agent 的驾驶舱" width="100%">
 
 <br><br>
 
-> *"AI 帮你一个下午起十个项目，然后它们就再也找不到了。FanBox 帮你把它们找回来。"*
-> *"AI spins up ten projects in an afternoon. FanBox helps you find them again."*
+> *"AI 帮你一个下午起十个项目，然后它们就再也找不到了。Gobox 帮你把它们找回来。"*
+> *"AI spins up ten projects in an afternoon. Gobox helps you find them again."*
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 [![Release](https://img.shields.io/github/v/release/Henri3s/gobox?label=Release&color=blue)](https://github.com/Henri3s/gobox/releases/latest)
 [![Platform](https://img.shields.io/badge/macOS-Apple%20Silicon-black?logo=apple)](https://github.com/Henri3s/gobox/releases/latest)
 [![Runtime](https://img.shields.io/badge/Runtime-no--build-blueviolet)](#architecture)
+[![Fork](https://img.shields.io/badge/Fork%20of-FanBox-orange)](https://github.com/alchaincyf/fanbox)
 
 <br>
 
-**FanBox：Coding Agent 的驾驶舱。指挥 Claude Code、Codex 在本地干活，看清它碰过的每个文件、改过的每一行，随时接手。**<br>
-**FanBox — the cockpit for coding agents: command Claude Code or Codex, see every file and line they change, and take over anytime.**
+**Gobox：Coding Agent 的驾驶舱。指挥 Claude Code、Codex 在本地干活，看清它碰过的每个文件、改过的每一行，随时接手。**<br>
+**Gobox — the cockpit for coding agents: command Claude Code or Codex, see every file and line they change, and take over anytime.**
+
+<br>
+
+> 🍃 **Gobox 是 [FanBox](https://github.com/alchaincyf/fanbox) 的 fork**，由原作者 [花叔 Huashu](https://github.com/alchaincyf) 开源。本 fork 在原版基础上新增了**自定义字体、AI 自动整理、macOS 系统皮肤**等功能，并调整了品牌。感谢原作者的开源贡献。
+> 🍃 **Gobox is a fork of [FanBox](https://github.com/alchaincyf/fanbox)**, open-sourced by its original author [Huashu](https://github.com/alchaincyf). This fork adds **custom fonts, AI auto-organize, and a macOS system skin** on top of the original, with a rebrand. All credit for the original work belongs to the author.
 
 <br>
 
@@ -29,36 +35,36 @@ Every time the agent writes a file, its card lights up — *find files → run a
 
 <br>
 
-[⬇ 下载 dmg / Download dmg](https://github.com/Henri3s/gobox/releases/latest) · [Screenshots / 截图](#three-skins) · [Features / 功能](#what-it-does) · [Install / 安装](#install) · [Credits / 致谢](#credits)
+[⬇ 下载 dmg / Download dmg](https://github.com/Henri3s/gobox/releases/latest) · [Screenshots / 截图](#four-skins) · [Features / 功能](#what-it-does) · [Install / 安装](#install) · [Credits / 致谢](#credits)
 
 </div>
 
 ---
 
 <p align="center">
-  <img src="assets/screenshot-volt.png" alt="FanBox · Volt skin · file browser on the left, README preview at the bottom, embedded terminal on the right" width="100%">
+  <img src="assets/screenshot-volt.png" alt="Gobox · Volt skin · file browser on the left, README preview at the bottom, embedded terminal on the right" width="100%">
 </p>
 
-<p align="center"><sub>▲ 真机截图：浏览 fanbox 仓库本身，README 原地预览，内嵌终端正在跑 git。本页所有截图均由 Playwright 从实时 App 中直接拍摄，未修图。<br>Real capture: browsing the fanbox repo itself, README previewed in place, git running in the embedded terminal. All screenshots in this README are taken from the live app via Playwright, unedited.</sub></p>
+<p align="center"><sub>▲ 真机截图：浏览 gobox 仓库本身，README 原地预览，内嵌终端正在跑 git。本页所有截图均由 Playwright 从实时 App 中直接拍摄，未修图。<br>Real capture: browsing the gobox repo itself, README previewed in place, git running in the embedded terminal. All screenshots in this README are taken from the live app via Playwright, unedited.</sub></p>
 
 ---
 
-<a id="why-fanbox"></a>
-## Why FanBox · 为什么要做 FanBox
+<a id="why-gobox"></a>
+## Why Gobox · 为什么要做 Gobox
 
 AI 帮你一个下午起十个项目，但它们散在各处、名字认不出、改了啥看不见。每天的真实流程是：Finder 里翻半天 → 切到 iTerm 启 agent → 再切浏览器看效果，三个窗口来回跳。
 
 AI helps you start ten projects in an afternoon — then they scatter everywhere, the names stop making sense, and you can't see what got changed. The daily reality: dig through Finder → switch to iTerm to launch an agent → switch to the browser to check results. Three windows, endless hopping.
 
-FanBox 把这条链路收进一个窗口：**左边文件 × 右边/下边终端 × 原地预览**，一个有机整体。它不跟 Finder 拼文件操作，不跟 VS Code 拼编辑，专注「找回 + 预览 + 轻改 + 指挥 agent」这一条链路做到顺手。
+Gobox 把这条链路收进一个窗口：**左边文件 × 右边/下边终端 × 原地预览**，一个有机整体。它不跟 Finder 拼文件操作，不跟 VS Code 拼编辑，专注「找回 + 预览 + 轻改 + 指挥 agent」这一条链路做到顺手。
 
-FanBox folds that loop into one window: **files on the left × terminal on the right/bottom × preview in place**. It doesn't compete with Finder on file ops or VS Code on editing. It does one chain well: *find → preview → light edits → command the agent*.
+Gobox folds that loop into one window: **files on the left × terminal on the right/bottom × preview in place**. It doesn't compete with Finder on file ops or VS Code on editing. It does one chain well: *find → preview → light edits → command the agent*.
 
 不做云、不做远程、不做账号。本地、零配置、运行时零依赖。
 
 No cloud, no remote, no accounts. Local-first, zero config, zero runtime dependencies.
 
-<a id="three-skins"></a>
+<a id="four-skins"></a>
 ## Four skins · 四套皮肤
 
 界面在 [huashu-design](https://github.com/alchaincyf/huashu-design) 辅助下完成设计，四套皮肤不是换个主题色——配色、字体、图标、代码高亮、终端 ANSI 主题整体随之变化。
@@ -122,8 +128,8 @@ The UI was designed with [huashu-design](https://github.com/alchaincyf/huashu-de
   node-pty + xterm.js (WebGL). Claude Code / vim / htop render correctly, CJK wide characters included.
 - **拖文件进终端 / Drag files in** — 从文件列表拖文件/文件夹进终端，自动插入路径喂给 agent 当上下文。  
   Drop a file or folder into the terminal to insert its path as agent context.
-- **路径可点击 / Clickable paths** — 终端里出现的文件路径直接点击在 FanBox 打开；带空格的 macOS 截屏名、中文文件名、折行的长路径都能识别（空格边界由文件系统 stat 验证，不靠猜）。  
-  File paths appearing in terminal output open in FanBox on click; macOS screenshot names with spaces, Chinese filenames and wrapped long paths are all recognized (space boundaries verified by stat, not guessed).
+- **路径可点击 / Clickable paths** — 终端里出现的文件路径直接点击在 Gobox 打开；带空格的 macOS 截屏名、中文文件名、折行的长路径都能识别（空格边界由文件系统 stat 验证，不靠猜）。  
+  File paths appearing in terminal output open in Gobox on click; macOS screenshot names with spaces, Chinese filenames and wrapped long paths are all recognized (space boundaries verified by stat, not guessed).
 - **选中即甩给终端 / Send selection** — 预览里选一段文字，一键以「文件出处 + 围栏」格式发进终端（bracketed paste 包裹，不会被逐行误执行）。  
   Select text in a preview and fling it into the terminal with file provenance + fencing (bracketed paste, never executed line by line).
 - **态势感知 / Situational awareness** — 标签圆点显示 agent 运行/空闲/退出；agent 把球踢回给你时终端边缘呼吸提示「轮到你」，长任务完成发系统通知。  
@@ -146,8 +152,8 @@ The UI was designed with [huashu-design](https://github.com/alchaincyf/huashu-de
   Archive (paper), Volt (neon), Index (editorial), macOS (follows system light/dark + accent + Liquid Glass). Palette, typography, icons, code highlighting and terminal ANSI themes all change together.
 - **自定义字体 / Custom fonts** — 侧栏「字体」区两个按钮：界面字体 + 代码字体（终端 / 编辑器）分开设。点开列出系统已安装的全部字体（含中文字体），每项用它自己的字形预览，可搜索、可恢复默认。选完对整个 App 的界面、标题、终端、代码编辑器即时生效。  
   Two buttons in the sidebar "字体" section: UI font + code font (terminal / editor) set independently. Lists every installed system font (CJK included), each previewed in its own typeface, searchable, resettable. Applies instantly to the whole app — UI, headings, terminal, and code editor.
-- **AI 整理 / AI organize** — AI 只看元数据出整理提案（不读内容、不碰文件系统），每条建议带理由、逐条勾选过人，FanBox 执行并写回滚日志、一键整体撤销。引擎可选（Claude Code / Codex），策略提示词随便改。  
-  AI proposes a cleanup plan from metadata only (it never reads content or touches the filesystem); you approve each move; FanBox executes with a rollback log and one-click undo. Engine selectable (Claude Code / Codex), strategy prompt fully editable.
+- **AI 整理 / AI organize** — AI 只看元数据出整理提案（不读内容、不碰文件系统），每条建议带理由、逐条勾选过人，Gobox 执行并写回滚日志、一键整体撤销。引擎可选（Claude Code / Codex），策略提示词随便改。  
+  AI proposes a cleanup plan from metadata only (it never reads content or touches the filesystem); you approve each move; Gobox executes with a rollback log and one-click undo. Engine selectable (Claude Code / Codex), strategy prompt fully editable.
 
 <a id="install"></a>
 ## Install · 安装
@@ -221,9 +227,9 @@ Each development phase is reviewed by **5 independent subagents** playing differ
 <a id="credits"></a>
 ## Standing on the shoulders of giants · 建在巨人肩膀上
 
-FanBox 的核心能力来自这些出色的开源项目：
+Gobox 的核心能力来自这些出色的开源项目：
 
-FanBox's core capabilities come from these excellent open-source projects:
+Gobox's core capabilities come from these excellent open-source projects:
 
 | 项目 / Project | 用在哪 / Used for | License |
 |---|---|---|
@@ -257,7 +263,7 @@ Every frontend dependency is vendored locally (`public/vendor/`) — that's what
 <summary>项目结构 / Project layout</summary>
 
 ```
-fanbox/
+gobox/
 ├── server.js               # 零依赖 Node 后端（文件 API + 缩略图 + 静态服务）
 │                           # Zero-dependency Node backend (file APIs + thumbnails + static)
 ├── electron/
@@ -284,32 +290,23 @@ fanbox/
 
 ## Author · 关于作者
 
-**花叔 Huashu**——AI Native Coder，独立开发者。代表作：小猫补光灯（App Store 付费榜 Top1）。
+**原项目作者 / Original author**：**花叔 Huashu**（[@alchaincyf](https://github.com/alchaincyf)）——AI Native Coder，独立开发者。Gobox fork 自他开源的 [FanBox](https://github.com/alchaincyf/fanbox)，原版的全部核心能力（文件指挥中心、内嵌终端、agent 观察仪表盘）均出自他手。代表作：小猫补光灯（App Store 付费榜 Top1）。
 
-**Huashu (花叔)** — AI Native Coder, indie developer. Known for Cat Light (App Store paid chart Top 1).
+**Original author**: **Huashu (花叔)** ([@alchaincyf](https://github.com/alchaincyf)) — AI Native Coder, indie developer. Gobox is forked from his open-source [FanBox](https://github.com/alchaincyf/fanbox); all of the original's core capabilities (the file cockpit, embedded terminal, agent observation dashboard) are his work. Known for Cat Light (App Store paid chart Top 1).
 
-| 平台 / Platform | 链接 / Link |
-|------|------|
-| 🌐 官网 / Web | [bookai.top](https://bookai.top) · [huasheng.ai](https://www.huasheng.ai) |
-| 𝕏 Twitter | [@AlchainHust](https://x.com/AlchainHust) |
-| 📺 B站 / Bilibili | [花叔](https://space.bilibili.com/14097567) |
-| 📕 小红书 / Xiaohongshu | [花叔](https://www.xiaohongshu.com/user/profile/5abc6f17e8ac2b109179dfdf) |
-| 💬 公众号 / WeChat | 微信搜「花叔」 / Search "花叔" |
+**本 Fork 维护者 / Fork maintainer**：[Henri Zhou](https://github.com/Henri3s)（[@Henri3s](https://github.com/Henri3s)）
 
-更多 AI 造物：
-
-More AI creations:
-
-- [女娲.skill](https://github.com/alchaincyf/nuwa-skill)（蒸馏任何人的思维方式 / distill anyone's way of thinking）
-- [huashu-design](https://github.com/alchaincyf/huashu-design)（一句话拿回一份能交付的设计 / a deliverable design from one sentence）
+> 💡 上游原版的作者动态、社交账号与其他 AI 造物，请访问上游仓库 [alchaincyf/fanbox](https://github.com/alchaincyf/fanbox) 的 README。本 Fork 出于尊重只保留作者署名 + 上游链接，不再搬运作者个人社交推广。
+>
+> 💡 For the original author's social accounts and other AI projects, please visit the upstream repo [alchaincyf/fanbox](https://github.com/alchaincyf/fanbox). Out of respect, this Fork keeps only the author attribution + upstream link and intentionally does not copy the author's personal promotion.
 
 ---
 
 <div align="center">
 
-**Finder** 帮你管理文件。**IDE** 帮你写代码。**FanBox** 帮你看清 AI 在你机器上干了什么。<br>
-**Finder** manages your files. **IDEs** write your code. **FanBox** shows you what AI did on your machine.<br><br>
+**Finder** 帮你管理文件。**IDE** 帮你写代码。**Gobox** 帮你看清 AI 在你机器上干了什么。<br>
+**Finder** manages your files. **IDEs** write your code. **Gobox** shows you what AI did on your machine.<br><br>
 
-MIT License © [花叔 Huashu](https://github.com/alchaincyf)
+MIT License · Fork of [FanBox](https://github.com/alchaincyf/fanbox) by [花叔 Huashu](https://github.com/alchaincyf) · Fork maintained by [Henri Zhou](https://github.com/Henri3s)
 
 </div>
