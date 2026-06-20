@@ -2919,9 +2919,9 @@ function applyFont(mode, name) {
     state[mode === 'ui' ? 'fontUI' : 'fontMono'] = '';
   }
   fetch('/api/font', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ mode, name }) }).catch(() => {});
-  // 更新药丸 title，让用户知道当前用啥
+  // 更新药丸 tooltip（用 dataset.tip 走自定义气泡，不设 title 属性——否则原生 tooltip 和 data-tip 双重显示还会触发抖动）
   const btn = mode === 'ui' ? $('#font-ui-btn') : $('#font-mono-btn');
-  if (btn) btn.title = (mode === 'ui' ? '界面字体' : '代码字体（终端 / 编辑器）') + (name ? `：${name}（点击切换）` : '（点击选择）');
+  if (btn) btn.dataset.tip = (mode === 'ui' ? '界面字体' : '代码字体（终端 / 编辑器）') + (name ? `：${name}（点击切换）` : '（点击选择）');
   // 热改已存在的终端/编辑器；首次启动时它们还没创建，创建时会读到注入后的值
   if (typeof term !== 'undefined' && term.sessions.length && mode === 'mono') term.refont();
   if (typeof mona !== 'undefined' && mode === 'mono') mona.refont();
@@ -2931,10 +2931,10 @@ function applyFont(mode, name) {
 function applyPersistedFont() {
   if (state.fontUI) applyFontSilent('ui', state.fontUI);
   if (state.fontMono) applyFontSilent('mono', state.fontMono);
-  // 同步药丸 title
+  // 同步药丸 tooltip（dataset.tip，不设 title 属性）
   const u = $('#font-ui-btn'), m = $('#font-mono-btn');
-  if (u) u.title = '界面字体' + (state.fontUI ? `：${state.fontUI}（点击切换）` : '（点击选择）');
-  if (m) m.title = '代码字体（终端 / 编辑器）' + (state.fontMono ? `：${state.fontMono}（点击切换）` : '（点击选择）');
+  if (u) u.dataset.tip = '界面字体' + (state.fontUI ? `：${state.fontUI}（点击切换）` : '（点击选择）');
+  if (m) m.dataset.tip = '代码字体（终端 / 编辑器）' + (state.fontMono ? `：${state.fontMono}（点击切换）` : '（点击选择）');
 }
 // 静默注入：只改 CSS 变量，不持久化、不重渲染（启动时用，避免重复写盘和触发 refont）
 function applyFontSilent(mode, name) {
@@ -2959,10 +2959,38 @@ const fontPicker = {
 
   async loadList() {
     if (state.fontList.length) return state.fontList;
-    // Electron 走 IPC 拿真实系统字体；浏览器模式走 /api/fonts 预设清单
-    if (window.fanboxFont && window.fanboxFont.list) {
-      try { state.fontList = await window.fanboxFont.list(); } catch { state.fontList = []; }
+    // 优先用 Chromium 的 queryLocalFonts()：Electron 默认免授权，能枚举全量系统字体（含 CJK，
+    // 这点比 font-list 强——font-list 的原生二进制漏掉所有中文字体）。浏览器模式（无 queryLocalFonts）
+    // 或 API 失败时退回 /api/fonts 硬编码预设清单。
+    if (typeof window.queryLocalFonts === 'function') {
+      try {
+        const raw = await window.queryLocalFonts();
+        // queryLocalFonts 每个 weight/style 一条；按 family 去重。
+        // 去重时优先取 Regular 那条，让 fullName 不带 weight 后缀（如 "Menlo" 而非 "Menlo Bold"）
+        const byFamily = new Map();
+        for (const f of raw) {
+          const cur = byFamily.get(f.family);
+          if (!cur) { byFamily.set(f.family, f); continue; }
+          // 已有记录：如果当前是 Regular 且已有不是，替换（Regular 的 fullName 最干净）
+          if (f.style === 'Regular' && cur.style !== 'Regular') byFamily.set(f.family, f);
+        }
+        // 等宽判定：queryLocalFonts 不给 monospace 标记，用 family 名关键词启发。
+        // 命中 mono/menlo/monaco/courier/consol/code(hack/fira/jetbrains 等) 即判等宽；
+        // 排除 'Arial Unicode'（含 code 但非等宽）等已知误判。
+        const isFixed = (s) => {
+          if (!s) return false;
+          if (/arial unicode/i.test(s)) return false;       // 已知误判排除
+          return /\bmono\b|\bmonospace\b|nerd|menlo|monaco|courier|consol|andale|source code|hack|fira code|jetbrains|cascadia|iosevka|sarasa|victor mono|sauce code/i.test(s);
+        };
+        state.fontList = [...byFamily.values()].map((f) => ({
+          name: f.fullName || f.family,        // 显示名：优先 fullName（CJK 字体这里有中文名）
+          family: f.family,                    // CSS font-family 引用名（英文/PostScript 名更稳）
+          fixed: isFixed(f.family),
+          kind: 'system',                      // queryLocalFonts 不给路径，统一标 system
+        })).sort((a, b) => a.name.localeCompare(b.name, 'zh'));
+      } catch (e) { state.fontList = []; }
     }
+    // 兜底：无 queryLocalFonts 或枚举失败 → 走 /api/fonts 预设
     if (!state.fontList.length) {
       try {
         const r = await fetch('/api/fonts');
@@ -3044,9 +3072,11 @@ const fontPicker = {
         html += `<li class="font-group-label">${kindLabel[f.kind]}</li>`;
         lastKind = f.kind;
       }
-      const esc = f.name.replace(/'/g, "\\'").replace(/"/g, '&quot;');
-      const ff = /^[A-Za-z0-9-]+$/.test(f.name) ? f.name : `'${f.name.replace(/'/g, "\\'")}'`;
-      const active = f.name === current ? ' active' : '';
+      // data-name 存 family（CSS 引用名，applyFont 注入 font-family 用）；显示用 name（CJK 字体这里有中文名）
+      const cssRef = f.family || f.name;
+      const esc = cssRef.replace(/'/g, "\\'").replace(/"/g, '&quot;');
+      const ff = /^[A-Za-z0-9-]+$/.test(cssRef) ? cssRef : `'${cssRef.replace(/'/g, "\\'")}'`;
+      const active = cssRef === current ? ' active' : '';
       const tag = f.fixed ? '<span class="font-item-tag">代码</span>' : '';
       const check = active ? '<span class="font-item-check">✓</span>' : '';
       html += `<li class="font-item${active}" data-name="${esc}" style="font-family: ${ff}, sans-serif"><span class="font-item-name">${f.name}</span>${tag}${check}</li>`;
