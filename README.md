@@ -59,17 +59,18 @@ FanBox folds that loop into one window: **files on the left × terminal on the r
 No cloud, no remote, no accounts. Local-first, zero config, zero runtime dependencies.
 
 <a id="three-skins"></a>
-## Three skins · 三套皮肤
+## Four skins · 四套皮肤
 
-界面在 [huashu-design](https://github.com/alchaincyf/huashu-design) 辅助下完成设计，三套皮肤不是换个主题色——配色、字体、图标、代码高亮、终端 ANSI 主题整体随之变化。
+界面在 [huashu-design](https://github.com/alchaincyf/huashu-design) 辅助下完成设计，四套皮肤不是换个主题色——配色、字体、图标、代码高亮、终端 ANSI 主题整体随之变化。
 
-The UI was designed with [huashu-design](https://github.com/alchaincyf/huashu-design). The three skins are not theme-color swaps — palette, typography, icons, code highlighting and terminal ANSI themes all change together:
+The UI was designed with [huashu-design](https://github.com/alchaincyf/huashu-design). The four skins are not theme-color swaps — palette, typography, icons, code highlighting and terminal ANSI themes all change together:
 
 | | |
 |---|---|
 | <img src="assets/screenshot-volt.png" alt="Volt skin / 终端皮肤"> | **终端 · Volt** · 荧光绿 × 炭黑 × 等宽字，工业仪器面板感（默认）<br>**Volt** · neon green × charcoal × monospace, industrial instrument panel (default) |
 | <img src="assets/screenshot-archive.png" alt="Archive skin / 档案皮肤"> | **档案 · Archive** · 奶油纸 × 赤陶橙 × 衬线，温暖纸感档案馆<br>**Archive** · cream paper × terracotta × serif, a warm paper archive |
 | <img src="assets/screenshot-index.png" alt="Index skin / 索引皮肤"> | **索引 · Index** · 黑白 × 信号红/绿 × 巨号字，编辑式索引日报<br>**Index** · black & white × signal red/green × oversized type, editorial index daily |
+| | **系统 · macOS Liquid Glass** · 跟随系统毛玻璃、实时同步系统强调色与深浅外观，原生 macOS 27 质感<br>**macOS** · follows system Liquid Glass, syncs accent color and light/dark in real time, native macOS 27 feel |
 
 <a id="what-it-does"></a>
 ## What it does · 能做什么
@@ -106,8 +107,6 @@ The UI was designed with [huashu-design](https://github.com/alchaincyf/huashu-de
   Open any project folder and see what AI did there: past sessions (your first message as the title), the files each session changed, the skills it triggered — and a "resume" button that reconnects the context via `claude --resume` / `codex resume` in the embedded terminal.
 - **截图直通车 / Screenshot express** — 系统截屏落盘即浮出直通卡：喂给终端里的 agent、收进项目 `素材/`、或先标注再发。  
   Take a system screenshot and a card pops up in the corner: feed it to the terminal agent, file it into the project's `素材/` (assets) folder, or annotate before sending.
-- **AI 整理 / AI organize** — AI 只看元数据出整理提案（不读内容、不碰文件系统），每条建议带理由、逐条勾选过人，FanBox 执行并写回滚日志、一键整体撤销。引擎可选（Claude Code / Codex），策略提示词随便改。  
-  AI proposes a cleanup plan from metadata only (it never reads content or touches the filesystem); you approve each move; FanBox executes with a rollback log and one-click undo. Engine selectable (Claude Code / Codex), strategy prompt fully editable.
 - **发版向导 / Release wizard** — node 项目一键串起版本号、CHANGELOG、打包、推送、GitHub Release，整条命令序列在内嵌终端可见地跑。  
   For node projects: version bump, CHANGELOG promotion, build, push and GitHub Release composed into one command sequence that runs visibly in the embedded terminal.
 - **Skills 透视 / Skills X-ray** — 本机全部 agent skills 一个视图：触发统计、健康检查、context 预算、不删文件的启停开关。  
@@ -140,6 +139,15 @@ The UI was designed with [huashu-design](https://github.com/alchaincyf/huashu-de
   Pen/arrow/text/redaction, format conversion, compression, resizing; overwriting the original asks first.
 - **未保存守卫 / Unsaved guard** — 三种编辑器统一拦截未保存退出，Esc 旁路也堵死。  
   All three editors intercept unsaved exits, including the Esc bypass.
+
+### Personalize · 个性化
+
+- **四套皮肤 / Four skins** — 档案（纸感）、终端（荧光绿）、索引（编辑式）、系统（跟随 macOS 深浅 + 强调色 + 毛玻璃）。配色、字体、图标、代码高亮、终端 ANSI 主题整体随皮肤切换。  
+  Archive (paper), Volt (neon), Index (editorial), macOS (follows system light/dark + accent + Liquid Glass). Palette, typography, icons, code highlighting and terminal ANSI themes all change together.
+- **自定义字体 / Custom fonts** — 侧栏「字体」区两个按钮：界面字体 + 代码字体（终端 / 编辑器）分开设。点开列出系统已安装的全部字体（含中文字体），每项用它自己的字形预览，可搜索、可恢复默认。选完对整个 App 的界面、标题、终端、代码编辑器即时生效。  
+  Two buttons in the sidebar "字体" section: UI font + code font (terminal / editor) set independently. Lists every installed system font (CJK included), each previewed in its own typeface, searchable, resettable. Applies instantly to the whole app — UI, headings, terminal, and code editor.
+- **AI 整理 / AI organize** — AI 只看元数据出整理提案（不读内容、不碰文件系统），每条建议带理由、逐条勾选过人，FanBox 执行并写回滚日志、一键整体撤销。引擎可选（Claude Code / Codex），策略提示词随便改。  
+  AI proposes a cleanup plan from metadata only (it never reads content or touches the filesystem); you approve each move; FanBox executes with a rollback log and one-click undo. Engine selectable (Claude Code / Codex), strategy prompt fully editable.
 
 <a id="install"></a>
 ## Install · 安装
