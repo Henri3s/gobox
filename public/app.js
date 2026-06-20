@@ -2921,7 +2921,8 @@ function applyFont(mode, name) {
   fetch('/api/font', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ mode, name }) }).catch(() => {});
   // 更新药丸 tooltip（用 dataset.tip 走自定义气泡，不设 title 属性——否则原生 tooltip 和 data-tip 双重显示还会触发抖动）
   const btn = mode === 'ui' ? $('#font-ui-btn') : $('#font-mono-btn');
-  if (btn) btn.dataset.tip = (mode === 'ui' ? '界面字体' : '代码字体（终端 / 编辑器）') + (name ? `：${name}（点击切换）` : '（点击选择）');
+  // tooltip 文本保持简短：自定义后只标「已自定义」，不显示完整 family 名（PostScript 名可能很长，撑爆 tooltip 引起布局抖动）
+  if (btn) btn.dataset.tip = (mode === 'ui' ? '界面字体' : '代码字体') + (name ? ' · 已自定义' : '');
   // 热改已存在的终端/编辑器；首次启动时它们还没创建，创建时会读到注入后的值
   if (typeof term !== 'undefined' && term.sessions.length && mode === 'mono') term.refont();
   if (typeof mona !== 'undefined' && mode === 'mono') mona.refont();
@@ -2933,8 +2934,8 @@ function applyPersistedFont() {
   if (state.fontMono) applyFontSilent('mono', state.fontMono);
   // 同步药丸 tooltip（dataset.tip，不设 title 属性）
   const u = $('#font-ui-btn'), m = $('#font-mono-btn');
-  if (u) u.dataset.tip = '界面字体' + (state.fontUI ? `：${state.fontUI}（点击切换）` : '（点击选择）');
-  if (m) m.dataset.tip = '代码字体（终端 / 编辑器）' + (state.fontMono ? `：${state.fontMono}（点击切换）` : '（点击选择）');
+  if (u) u.dataset.tip = '界面字体' + (state.fontUI ? ' · 已自定义' : '');
+  if (m) m.dataset.tip = '代码字体' + (state.fontMono ? ' · 已自定义' : '');
 }
 // 静默注入：只改 CSS 变量，不持久化、不重渲染（启动时用，避免重复写盘和触发 refont）
 function applyFontSilent(mode, name) {

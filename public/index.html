@@ -206,8 +206,7 @@
   <script src="/vendor/xterm/addon-unicode11.js" onerror="window.__noUnicode11=1"></script>
   <script src="/i18n-dict.js" onerror="window.__noDict=1"></script>
   <script src="/i18n.js"></script>
-  <script src="/app.js"></script>
-  <!-- 字体选择器 popover：单实例，body 末尾避免被侧栏 overflow 裁剪 -->
+  <!-- 字体选择器 popover：单实例，放 script 之前确保 init() 能绑到 DOM（app.js 同步执行，DOM 解析到 script 时之后的元素还没构建） -->
   <div id="font-popover" class="font-popover hidden" role="dialog" aria-modal="false">
     <div class="font-pop-head">
       <span class="font-pop-title">界面字体</span>
@@ -216,5 +215,6 @@
     <div class="font-pop-search"><input type="text" id="font-pop-q" placeholder="搜索字体…" autocomplete="off" spellcheck="false"></div>
     <ul class="font-pop-list" id="font-pop-list"></ul>
   </div>
+  <script src="/app.js"></script>
 </body>
 </html>

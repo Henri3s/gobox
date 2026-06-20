@@ -728,9 +728,14 @@ kbd {
 .lang-toggle:hover { color: var(--accent); border-color: var(--accent); }
 /* 字体选择器药丸：继承 .lang-toggle，独立钩子方便后续微调 */
 .font-toggle { font-weight: 600; }
-/* 底部药丸的 tooltip 往上显示：按钮贴 sidebar 底部，tooltip 往下溢出会触发滚动条抖动循环 */
+/* 底部药丸的 tooltip 往上显示 + 限宽换行：按钮贴 sidebar 底部，tooltip 往下溢出会触发滚动条抖动循环；
+   限宽防止长文本（含字体名）水平撑爆引起布局抖动。tooltip 不随用户字体变（用系统字体），避免自定义字体后尺寸跳变 */
 .font-toggle[data-tip]:hover::after,
-.foot-toggles .lang-toggle[data-tip]:hover::after { top: auto; bottom: calc(100% + 7px); }
+.foot-toggles .lang-toggle[data-tip]:hover::after {
+  top: auto; bottom: calc(100% + 7px);
+  max-width: 160px; white-space: normal; text-align: center;
+  font-family: -apple-system, BlinkMacSystemFont, sans-serif;
+}
 .font-toggle[data-tip]:hover::before,
 .foot-toggles .lang-toggle[data-tip]:hover::before { top: auto; bottom: calc(100% + 2px); border-bottom-color: transparent; border-top-color: var(--text); }
 
