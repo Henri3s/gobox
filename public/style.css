@@ -269,6 +269,7 @@ body {
   flex-direction: column;
   padding: 16px 12px;
   overflow-y: auto;
+  scrollbar-gutter: stable; /* 预留滚动条占位：tooltip 伪元素引起 scrollHeight 微变时，滚动条位不闪现/消失，消除底部按钮 hover 抖动 */
 }
 /* 侧栏右缘拖拽条：fixed 定位贴在 sidebar 右边界（用 --sidebar-w 变量定位），不随侧栏滚动跑掉 */
 #sidebar-resizer { position: fixed; top: 0; bottom: 0; left: calc(var(--sidebar-w, 248px) - 3px); width: 6px; cursor: col-resize; z-index: 50; }
