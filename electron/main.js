@@ -5,10 +5,15 @@
  * 复用零依赖后端 server.js（文件能力），叠加 node-pty 内嵌终端，
  * 让 TUI coding agent（Claude Code / Codex / Aider…）在界面里直接跑起来。
  */
-const { app, BrowserWindow, ipcMain, shell, nativeImage, Menu, clipboard, dialog, net, session } = require('electron');
+const { app, BrowserWindow, ipcMain, shell, nativeImage, Menu, clipboard, dialog, net, session, systemPreferences, nativeTheme } = require('electron');
 const path = require('path');
 const os = require('os');
 const fs = require('fs');
+// 系统字体枚举：font-list 预编译 universal binary（x86_64+arm64），调 NSFontManager，
+// 不走 native addon，无需 electron-rebuild。getFonts2() 直接给 monospace 精确判定。
+const fontList = require('font-list');
+// 系统字体缓存：getFonts2() 首次 200-500ms，启动后异步预热一次，后续 IPC 直接命中
+let _fontCache = null;
 
 // 复用现有后端：require 即 listen 127.0.0.1:PORT，不自动开浏览器
 process.env.FANBOX_NO_OPEN = '1';
@@ -95,6 +100,8 @@ app.whenReady().then(() => {
     console.log('[lid] 视图 子菜单 =', view ? JSON.stringify(view.submenu.items.map((x) => x.label || `<${x.type}>`)) : '没找到视图菜单');
   } catch (e) { console.log('[lid] dump menu 出错:', e.message); }
   createWindow();
+  // 字体枚举预热：getFonts2() 首次 200-500ms，启动后异步跑一次填缓存，用户首次打开字体选择器时秒出
+  listSystemFonts().catch(() => { /* 预热失败不挡启动，IPC 调用时会再试 */ });
   // 临时调试：dev 实例强制抢到最前，避免和正式版搞混
   setTimeout(() => { try { app.focus({ steal: true }); if (win && !win.isDestroyed()) { win.show(); win.focus(); win.setAlwaysOnTop(true); setTimeout(() => win.setAlwaysOnTop(false), 1500); } } catch { /* */ } }, 1200);
   startShotWatch();
@@ -231,6 +238,60 @@ ipcMain.handle('win:traffic', (e, { show }) => {
   if (!win || win.isDestroyed() || typeof win.setWindowButtonVisibility !== 'function') return;
   win.setWindowButtonVisibility(!!show);
 });
+
+// 动态切窗口背景色：macos 皮肤要透明（让 vibrancy 透出壁纸），其它皮肤恢复各自底色
+ipcMain.handle('win:bg', (e, { color }) => {
+  if (!win || win.isDestroyed() || typeof win.setBackgroundColor !== 'function') return;
+  try { win.setBackgroundColor(color || '#000000'); } catch { /* */ }
+});
+
+// 读取系统强调色 + 当前深浅外观，给「系统皮肤」用（macOS 专属，非 mac 平台返回 null 优雅降级）
+// systemPreferences.getAccentColor() 返回 '83aae3' 形式（无 #）；nativeTheme 反映系统外观
+ipcMain.handle('theme:accent', () => {
+  const accent = (process.platform === 'darwin' && systemPreferences.getAccentColor) ? systemPreferences.getAccentColor() : '';
+  return { accent, dark: !!nativeTheme.shouldUseDarkColors };
+});
+// 系统设置里改强调色 / 深浅外观时，主动推给渲染层实时跟随
+nativeTheme.on('updated', () => {
+  if (!win || win.isDestroyed()) return;
+  const accent = (process.platform === 'darwin' && systemPreferences.getAccentColor) ? systemPreferences.getAccentColor() : '';
+  win.webContents.send('theme:changed', { accent, dark: !!nativeTheme.shouldUseDarkColors });
+});
+
+// 系统字体枚举：返回 [{ name, fixed, kind }]，kind 区分 user(用户装)/system(系统自带)
+// font-list 的 getFonts2() 给 monospace 精确判定；user/system 靠扫 ~/Library/Fonts 的字体文件名匹配
+async function listSystemFonts() {
+  if (_fontCache) return _fontCache;
+  try {
+    const detailed = await fontList.getFonts2();
+    // 收集用户安装的字体文件名（~/Library/Fonts），用来标 kind=user
+    const userFiles = new Set();
+    for (const dir of [path.join(os.homedir(), 'Library/Fonts'), '/Library/Fonts']) {
+      try {
+        for (const f of fs.readdirSync(dir)) {
+          // 去扩展名 + 去权重后缀，粗略匹配 family name
+          userFiles.add(f.replace(/\.(ttf|otf|ttc|woff2?)$/i, '').toLowerCase());
+        }
+      } catch { /* 目录不存在或无权限 */ }
+    }
+    const seen = new Set();
+    const out = [];
+    for (const f of detailed) {
+      const name = f.name.replace(/^["']|["']$/g, '');
+      if (!name || seen.has(name)) continue;
+      seen.add(name);
+      // 用户字体判定：family name 能在 ~/Library/Fonts 或 /Library/Fonts 文件名里模糊命中
+      const isUser = [...userFiles].some((fn) => fn.includes(name.toLowerCase()) || name.toLowerCase().includes(fn));
+      out.push({ name, fixed: !!f.monospace, kind: isUser ? 'user' : 'system' });
+    }
+    _fontCache = out;
+    return out;
+  } catch (e) {
+    console.error('[fonts:list] 枚举失败:', e.message);
+    return [];
+  }
+}
+ipcMain.handle('fonts:list', () => listSystemFonts());
 
 // 界面语言：用户手动选过的存在配置文件（渲染层切换时写入），没选过跟随系统
 function uiLang() {

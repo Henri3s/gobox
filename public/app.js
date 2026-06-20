@@ -84,6 +84,24 @@ function iconColorFor(e) {
     if (e.kind === 'data' || ['csv', 'tsv'].includes(ex)) return '#00a33e';
     return '#0a0a0a';
   }
+  // macos：贴 Finder 风格——标志性蓝色文件夹 + 克制柔和的系统色文件图标，不抢界面
+  if (t === "macos") {
+    if (e.isDir) return "#3b82f6";                         // macOS 文件夹蓝
+    if (["md","markdown","txt"].includes(ex)) return "#8e8e93";  // 文本：中性灰
+    if (["html","htm","vue"].includes(ex)) return "#e87b5b";     // 网页：暖橙
+    if (["css","scss","less"].includes(ex)) return "#5b9ae8";     // 样式：蓝
+    if (["js","mjs","cjs","jsx"].includes(ex)) return "#e8c95b";  // JS：黄
+    if (["ts","tsx"].includes(ex)) return "#5b9ae8";             // TS：蓝
+    if (["json","json5","yml","yaml","toml","ini","env"].includes(ex)) return "#9aa08a"; // 配置：橄榄灰
+    if (["py"].includes(ex)) return "#5b90c9";                  // Python：蓝
+    if (["pdf"].includes(ex)) return "#e85b5b";                 // PDF：红
+    if (["zip","rar","7z","gz","tar"].includes(ex)) return "#a1a1a6"; // 压缩：灰
+    if (["csv","tsv","sql"].includes(ex)) return "#34c759";     // 数据：系统绿
+    if (e.kind === "image") return "#34c759";                   // 图片：绿
+    if (e.kind === "video") return "#af52de";                   // 视频：紫
+    if (e.kind === "audio") return "#ff2d55";                   // 音频：粉红
+    return "#8e8e93";                                            // 兜底：中性灰
+  }
   // terminal：暖色多彩，文件夹用中性灰绿不抢 volt
   if (e.isDir) return '#9aa08a';
   if (EXT_KIND[ex]) return EXT_KIND[ex][1];
@@ -199,6 +217,9 @@ const state = {
   muted: localStorage.getItem('fb_muted') === '1', // WOW4 提示音静音开关
   changeLog: [], // 本会话 agent 改过的文件（跨所有监听目录，按文件去重、最新置顶），供「变更」面板回看
   changeTimeline: [], // 每一次写入事件（不去重，带时间戳），供「会话回放」拖时间轴重现
+  fontUI: localStorage.getItem('fb_font_ui') || '',   // 自定义界面字体（空=用 :root 默认）
+  fontMono: localStorage.getItem('fb_font_mono') || '', // 自定义代码字体（终端/编辑器，空=默认）
+  fontList: [], // 系统已安装字体清单（[{ name, fixed, kind }]），Electron 走 IPC，浏览器模式走 /api/fonts 预设
 };
 
 // ---------- 工具 ----------
@@ -1644,6 +1665,195 @@ async function organizeLaunch(dirPath) {
   if (!r.ok) { toast(r.error || 'AI 整理启动失败', true); return; }
   term.runInDir(dirPath, r.cmd, `${r.engine === 'codex' ? 'Codex' : 'Claude'} 已开聊——先摊方案，你点头它才动手`);
 }
+// ---------- 自动整理（Auto-Tidy）：定时扫描 + 规则匹配 + 直接移动 ----------
+// 与 AI 整理互补：那个是一次性、交互式、语义判断；这个是持续、定时、确定性规则。
+// 两个入口：① 文件区右键/空白菜单「自动整理此文件夹…」打开配置 modal（源默认填当前目录）
+//           ② 侧栏「自动整理」打开总览 modal（列出所有规则集，开关/扫描/撤销/编辑/删除）
+// 规则配置 modal：名称 + 源 + 间隔 + 规则行（字段/操作符/值/目标，可增删）
+const AT_FIELDS = {
+  extension: { label: '后缀', ops: [['is', '是'], ['isNot', '不是']], valueType: 'text', ph: '如 png' },
+  nameContains: { label: '名称含', ops: [['contains', '包含'], ['notContains', '不包含']], valueType: 'text', ph: '关键词' },
+  olderThan: { label: '早于', ops: [['days', '天']], valueType: 'number', ph: '30' },
+  biggerThan: { label: '大于', ops: [['mb', 'MB']], valueType: 'number', ph: '100' },
+  kind: { label: '类型', ops: [['is', '是']], valueType: 'select', options: [['image', '图片'], ['video', '视频'], ['audio', '音频'], ['doc', '文档'], ['archive', '压缩包']] },
+};
+function atFieldOpts(selected) {
+  return Object.keys(AT_FIELDS).map((k) => `<option value="${k}"${k === selected ? ' selected' : ''}>${AT_FIELDS[k].label}</option>`).join('');
+}
+function atOpOpts(field, selected) {
+  const f = AT_FIELDS[field] || { ops: [] };
+  return f.ops.map(([v, l]) => `<option value="${v}"${v === selected ? ' selected' : ''}>${l}</option>`).join('');
+}
+function atValueInput(rule) {
+  const f = AT_FIELDS[rule.field] || {};
+  if (f.valueType === 'select') {
+    return `<select class="at-val">${(f.options || []).map(([v, l]) => `<option value="${v}"${v === rule.value ? ' selected' : ''}>${l}</option>`).join('')}</select>`;
+  }
+  return `<input class="at-val" type="${f.valueType === 'number' ? 'number' : 'text'}" placeholder="${f.ph || ''}" value="${escapeHtml(String(rule.value || ''))}">`;
+}
+// 读一行 DOM 回规则对象
+function atReadRow(row) {
+  const field = row.querySelector('.at-field').value;
+  const op = row.querySelector('.at-op').value;
+  const valEl = row.querySelector('.at-val');
+  const value = valEl ? valEl.value : '';
+  const target = row.querySelector('.at-target').value;
+  const enabled = row.querySelector('.at-enabled').checked;
+  return { id: row.dataset.id || ('r_' + Date.now() + Math.random().toString(36).slice(2, 5)), enabled, field, op, value, target };
+}
+// 渲染规则编辑 modal。ruleset 为 null = 新建
+async function autoTidyEdit(ruleset) {
+  const rs = ruleset || { id: '', name: '', source: state.cwd, enabled: true, intervalMin: 0, rules: [] };
+  const old = $('.at-overlay'); if (old) old.remove();
+  const ov = document.createElement('div');
+  ov.className = 'input-overlay at-overlay';
+  const renderRows = () => rs.rules.map((r) => `
+    <div class="at-rule" data-id="${r.id || ''}">
+      <input class="at-enabled" type="checkbox" title="本条规则开关"${r.enabled !== false ? ' checked' : ''}>
+      <select class="at-field">${atFieldOpts(r.field || 'extension')}</select>
+      <select class="at-op">${atOpOpts(r.field || 'extension', r.op)}</select>
+      <span class="at-value-cell">${atValueInput(r)}</span>
+      <span class="at-arrow">→</span>
+      <input class="at-target" type="text" placeholder="目标文件夹，如 ~/Pictures/截图" value="${escapeHtml(String(r.target || ''))}">
+      <button class="at-del ghost-btn" title="删除这条规则">✕</button>
+    </div>`).join('');
+  ov.innerHTML = `<div class="input-dialog at-dialog">
+    <div class="input-title">自动整理规则集</div>
+    <div class="at-form">
+      <label>名称 <input class="at-name" type="text" placeholder="如 下载文件夹分类" value="${escapeHtml(rs.name || '')}"></label>
+      <label class="at-en"><input class="at-enabled-set" type="checkbox"${rs.enabled !== false ? ' checked' : ''}> 启用</label>
+      <label>源文件夹 <input class="at-source" type="text" placeholder="监听哪个文件夹" value="${escapeHtml(rs.source || '')}"></label>
+      <label>扫描间隔 <input class="at-interval" type="number" min="0" value="${Number(rs.intervalMin) || 0}"> 分钟（0 = 仅手动）</label>
+      <div class="at-rules-head">规则（从上到下匹配，命中即停）</div>
+      <div class="at-rules">${renderRows()}</div>
+      <button class="at-add ghost-btn">＋ 添加规则</button>
+      <div class="at-foot">
+        <span class="at-last"></span>
+        <span class="at-actions"><button class="at-cancel ghost-btn">取消</button> <button class="at-save">保存</button></span>
+      </div>
+    </div>
+  </div>`;
+  document.body.appendChild(ov);
+  const close = () => ov.remove();
+  const onKey = (ev) => { if (ev.key === 'Escape') { ev.preventDefault(); close(); } };
+  document.addEventListener('keydown', onKey, true);
+  ov.onclick = (ev) => { if (ev.target === ov) close(); };
+  ov.querySelector('.at-cancel').onclick = close;
+  // 字段变化时刷新操作符和值输入类型
+  const refreshRowDeps = (row) => {
+    const field = row.querySelector('.at-field').value;
+    const opSel = row.querySelector('.at-op');
+    const oldOp = opSel.value;
+    opSel.innerHTML = atOpOpts(field, oldOp);
+    const cell = row.querySelector('.at-value-cell');
+    cell.innerHTML = atValueInput({ field, value: '', op: opSel.value });
+  };
+  ov.querySelectorAll('.at-rule').forEach((row) => {
+    row.querySelector('.at-field').onchange = () => refreshRowDeps(row);
+    row.querySelector('.at-del').onclick = () => { row.remove(); };
+  });
+  ov.querySelector('.at-add').onclick = () => {
+    const div = document.createElement('div');
+    div.className = 'at-rule';
+    div.dataset.id = '';
+    div.innerHTML = `<input class="at-enabled" type="checkbox" checked>
+      <select class="at-field">${atFieldOpts('extension')}</select>
+      <select class="at-op">${atOpOpts('extension', 'is')}</select>
+      <span class="at-value-cell">${atValueInput({ field: 'extension' })}</span>
+      <span class="at-arrow">→</span>
+      <input class="at-target" type="text" placeholder="目标文件夹">
+      <button class="at-del ghost-btn">✕</button>`;
+    div.querySelector('.at-field').onchange = () => refreshRowDeps(div);
+    div.querySelector('.at-del').onclick = () => div.remove();
+    ov.querySelector('.at-rules').appendChild(div);
+  };
+  // 显示最近一次执行摘要 + 撤销
+  if (rs.lastRun) {
+    const ts = new Date(rs.lastRun).toLocaleString('zh-CN');
+    const foot = ov.querySelector('.at-last');
+    foot.innerHTML = `最近：${ts} ${rs.lastSummary || ''}` + (rs.lastLog ? ` <a class="at-undo-link">撤销</a>` : '');
+    const undoLink = foot.querySelector('.at-undo-link');
+    if (undoLink) undoLink.onclick = async () => {
+      undoLink.textContent = '撤销中…';
+      const u = await apiPost('/api/autotidy/undo', { id: rs.id });
+      if (u.ok) toast(`已恢复 ${u.restored.length} 个` + (u.failed.length ? `，${u.failed.length} 个失败` : ''), !!u.failed.length);
+      else toast(u.error || '撤销失败', true);
+      close();
+      autoTidyOverview();
+    };
+  }
+  ov.querySelector('.at-save').onclick = async () => {
+    const name = ov.querySelector('.at-name').value.trim();
+    const source = ov.querySelector('.at-source').value.trim();
+    if (!name) { toast('请填名称', true); return; }
+    if (!source) { toast('请填源文件夹', true); return; }
+    const rules = [...ov.querySelectorAll('.at-rule')].map(atReadRow).filter((r) => r.value !== '' || r.field === 'kind');
+    if (!rules.length) { toast('至少加一条规则', true); return; }
+    const payload = {
+      id: rs.id || undefined, name, source, enabled: ov.querySelector('.at-enabled-set').checked,
+      intervalMin: Number(ov.querySelector('.at-interval').value) || 0, rules,
+    };
+    const r = await apiPost('/api/autotidy/save', payload);
+    if (r.ok) { toast('已保存'); close(); }
+    else toast(r.error || '保存失败', true);
+  };
+}
+
+// 规则集总览 modal（侧栏入口）：列出所有规则集，开关/扫描/撤销/编辑/删除/新建
+async function autoTidyOverview() {
+  const old = $('.at-overview'); if (old) old.remove();
+  const ov = document.createElement('div');
+  ov.className = 'input-overlay at-overview';
+  document.body.appendChild(ov);
+  const close = () => ov.remove();
+  const onKey = (ev) => { if (ev.key === 'Escape') { ev.preventDefault(); close(); } };
+  document.addEventListener('keydown', onKey, true);
+  ov.onclick = (ev) => { if (ev.target === ov) close(); };
+  const render = async () => {
+    const d = await api('/api/autotidy/list');
+    const sets = d.rulesets || [];
+    ov.innerHTML = `<div class="input-dialog at-ov-dialog">
+      <div class="input-title">自动整理 <button class="at-new">＋ 新建规则集</button></div>
+      <div class="at-ov-body">${sets.length ? sets.map((rs) => `
+        <div class="at-ov-item" data-id="${rs.id}">
+          <label class="at-ov-toggle"><input type="checkbox"${rs.enabled !== false ? ' checked' : ''}></label>
+          <div class="at-ov-main">
+            <div class="at-ov-name">${escapeHtml(rs.name)}</div>
+            <div class="at-ov-sub">${escapeHtml(rs.source.replace(state.home, '~'))} · ${(rs.rules || []).length} 条规则 · ${rs.intervalMin > 0 ? `每 ${rs.intervalMin} 分钟` : '仅手动'}${rs.lastRun ? ` · 最近 ${new Date(rs.lastRun).toLocaleString('zh-CN')} ${rs.lastSummary || ''}` : ''}</div>
+          </div>
+          <div class="at-ov-btns">
+            <button class="at-ov-run ghost-btn" title="立即扫描一次">扫描</button>
+            <button class="at-ov-edit ghost-btn">编辑</button>
+            <button class="at-ov-del ghost-btn" title="删除">✕</button>
+          </div>
+        </div>`).join('') : '<div class="empty-state">还没有规则集<br><br><span class="usage-sub">点「新建规则集」，或在文件区右键「自动整理此文件夹…」</span></div>'}</div>
+    </div>`;
+    ov.querySelector('.at-new').onclick = () => { close(); autoTidyEdit(null); };
+    ov.querySelectorAll('.at-ov-item').forEach((item) => {
+      const id = item.dataset.id;
+      const rs = sets.find((x) => x.id === id);
+      item.querySelector('.at-ov-toggle input').onchange = async (e) => {
+        await apiPost('/api/autotidy/save', { ...rs, enabled: e.target.checked });
+        render();
+      };
+      item.querySelector('.at-ov-run').onclick = async () => {
+        item.querySelector('.at-ov-run').textContent = '扫描中…';
+        const r = await apiPost('/api/autotidy/run', { id });
+        if (r.ok) toast(`移动 ${r.moved.length} 个` + (r.failed.length ? `，失败 ${r.failed.length} 个` : ''), !!r.failed.length);
+        else toast(r.error || '扫描失败', true);
+        render();
+      };
+      item.querySelector('.at-ov-edit').onclick = () => { close(); autoTidyEdit(rs); };
+      item.querySelector('.at-ov-del').onclick = async () => {
+        await apiPost('/api/autotidy/delete', { id });
+        toast('已删除');
+        render();
+      };
+    });
+  };
+  render();
+}
+
 
 // 发版向导：版本号 + 发布说明（预填 CHANGELOG 的 Unreleased 段）→ 命令序列在内嵌终端跑，每步可见可拦
 async function releasePanel() {
@@ -1731,6 +1941,7 @@ function showContextMenu(ev, e) {
   if (e.isDir) items.push({ label: '打开', fn: () => navigate(e.path) });
   else items.push({ label: '预览', fn: () => { state.selected = e.path; openPreview(e); renderFiles(); } });
   if (e.isDir) items.push({ label: 'AI 整理…', fn: () => organizeLaunch(e.path) });
+  if (e.isDir) items.push({ label: '自动整理此文件夹…', fn: () => autoTidyEdit({ source: e.path, enabled: true, intervalMin: 0, rules: [] }) });
   if (e.isDir) items.push({ label: '磁盘占用透视', fn: () => diskPanel(e.path) });
   if (e.isDir) items.push({ label: '在终端打开', fn: () => term.openInDir(e.path) });
   else items.push({ label: '在所在目录开终端', fn: () => term.openInDir(dirOf(e.path)) });
@@ -2410,6 +2621,7 @@ function bindEvents() {
   usagePanel.bind();
   shotTray.init();
   $('#skills-entry').onclick = () => skillsView.show();
+  $('#autotidy-entry').onclick = () => autoTidyOverview();
   $('#term-newtab').onclick = () => { wechatView.close(); term.newTab(); };
   $('#term-max').onclick = () => term.toggleMax();
   // 双击终端顶栏空白处（避开标签/按钮/输入框）= 铺满终端：agent 交互窗口最重要，给它一键放到最大
@@ -2472,6 +2684,7 @@ function bindEvents() {
       { label: '新建文件…', fn: () => doCreate('file') },
       { sep: true },
       { label: 'AI 整理…', fn: () => organizeLaunch(state.cwd) },
+      { label: '自动整理此文件夹…', fn: () => autoTidyEdit({ source: state.cwd, enabled: true, intervalMin: 0, rules: [] }) },
       { label: '磁盘占用透视', fn: () => diskPanel(state.cwd) },
     ]);
   };
@@ -2581,11 +2794,72 @@ function updateGridSizeVisibility() {
   $('#gridsize-seg').style.display = state.view === 'grid' ? '' : 'none';
 }
 
+// 系统皮肤专用：把系统强调色注入 --accent 变量（macos 皮肤跟随「系统设置 > 强调色」）。
+// 仅桌面 app 有 fanboxTheme；浏览器版直接跳过，用 CSS 兜底的系统蓝。
+let __sysAccentOff = null, __sysThemeSynced = false;
+function applySystemAccent() {
+  if (!window.fanboxTheme) return;
+  window.fanboxTheme.get().then(({ accent, dark }) => {
+    const root = document.documentElement;
+    if (accent && /^[0-9a-f]{6}$/i.test(accent)) {
+      root.style.setProperty("--accent", "#" + accent);
+      root.style.setProperty("--accent-soft", "#" + accent + "26");
+    }
+  }).catch(() => {});
+}
+// 注册一次：系统强调色/深浅外观变化时实时跟随（matchMedia 管深浅、fanboxTheme 管强调色）
+function initSystemThemeSync() {
+  if (__sysThemeSynced) return; __sysThemeSynced = true;
+  if (window.fanboxTheme && window.fanboxTheme.onChanged) {
+    __sysAccentOff = window.fanboxTheme.onChanged(({ accent }) => {
+      if (state.theme === "macos") {
+        if (accent && /^[0-9a-f]{6}$/i.test(accent)) {
+          document.documentElement.style.setProperty("--accent", "#" + accent);
+          document.documentElement.style.setProperty("--accent-soft", "#" + accent + "26");
+        }
+      }
+    });
+  }
+}
+
+// ---------- 字体选择器事件绑定 ----------
+function bindFontPicker() {
+  const u = $('#font-ui-btn'), m = $('#font-mono-btn');
+  // 点按钮：已开同 mode 则关闭，已开异 mode 则切过去，未开则打开
+  if (u) u.onclick = (e) => { e.stopPropagation(); if (fontPicker.open) { fontPicker.mode === 'ui' ? fontPicker.close() : fontPicker.openFor('ui'); } else fontPicker.openFor('ui'); };
+  if (m) m.onclick = (e) => { e.stopPropagation(); if (fontPicker.open) { fontPicker.mode === 'mono' ? fontPicker.close() : fontPicker.openFor('mono'); } else fontPicker.openFor('mono'); };
+  const pop = $('#font-popover');
+  // 点 popover 内部不冒泡（避免触发关闭）
+  pop.onclick = (e) => e.stopPropagation();
+  // 搜索框：实时过滤
+  const q = $('#font-pop-q');
+  if (q) q.oninput = () => { fontPicker.q = q.value; fontPicker.render(); };
+  // 恢复默认：清空当前 mode 的字体
+  const reset = $('.font-pop-reset');
+  if (reset) reset.onclick = () => { applyFont(fontPicker.mode, ''); fontPicker.render(); };
+  // 点外部 / ESC 关闭
+  document.addEventListener('click', () => { if (fontPicker.open) fontPicker.close(); });
+  document.addEventListener('keydown', (e) => { if (fontPicker.open && e.key === 'Escape') { fontPicker.close(); e.stopPropagation(); } });
+  // 窗口缩放：重新定位 popover（防止飘出可视区）
+  window.addEventListener('resize', () => { if (fontPicker.open) fontPicker.position(); });
+}
+
 // ---------- 主题 / 皮肤 ----------
 function applyTheme(skin, rerender = true) {
-  if (!['terminal', 'warm', 'editorial'].includes(skin)) skin = 'terminal';
+  if (!['terminal', 'warm', 'editorial', 'macos'].includes(skin)) skin = 'terminal';
   state.theme = skin;
   document.documentElement.dataset.theme = skin;
+  // 窗口底色联动：macos 透明（透壁纸 vibrancy），其它皮肤恢复各自底色
+  const winBg = { macos: "#ececec", terminal: "#0b0c0a", warm: "#f5f0e8", editorial: "#f4f1ea" }[skin];
+  if (window.fanboxWin && window.fanboxWin.setBackground) window.fanboxWin.setBackground(winBg);
+  // macOS 系统皮肤：注入系统强调色并跟随系统外观/强调色变化；其它皮肤清除覆盖、恢复 CSS 默认值
+  if (skin === "macos") {
+    applySystemAccent();
+    initSystemThemeSync();
+  } else {
+    document.documentElement.style.removeProperty("--accent");
+    document.documentElement.style.removeProperty("--accent-soft");
+  }
   localStorage.setItem('fb_theme', skin);
   const link = document.getElementById('hljs-theme');
   if (link) link.href = '/vendor/hljs/styles/' + (skin === 'terminal' ? 'github-dark' : 'github') + '.min.css';
@@ -2601,6 +2875,192 @@ function applyTheme(skin, rerender = true) {
     }
   }
 }
+
+// ---------- 自定义字体 ----------
+// 设计要点：用户字体放 CSS 变量最前，原回退链在后；未选字体时不注入，维持 :root 默认。
+// UI 字体覆盖 --font-ui/--font-display/--font-fname；代码字体覆盖 --font-mono/--font-term。
+// 切换后调 term.refont()/mona.refont() 热改，不销毁重建（保会话状态）。
+const FONT_FALLBACK_UI = '-apple-system, BlinkMacSystemFont, "PingFang SC", "Microsoft YaHei", "Segoe UI", "Inter", sans-serif';
+const FONT_FALLBACK_MONO = 'ui-monospace, "SF Mono", Menlo, "JetBrains Mono", monospace';
+const FONT_FALLBACK_TERM = '"JetBrainsMono Nerd Font", "MesloLGS NF", "FiraCode Nerd Font", "Hack Nerd Font", "Symbols Nerd Font Mono", ui-monospace, "SF Mono", Menlo, monospace';
+
+function applyFont(mode, name) {
+  // name 空字符串 = 恢复默认（移除覆盖，让 :root 默认值生效）
+  const root = document.documentElement;
+  if (!name) {
+    if (mode === 'ui') {
+      root.style.removeProperty('--font-ui');
+      root.style.removeProperty('--font-display');
+      root.style.removeProperty('--font-fname');
+    } else {
+      root.style.removeProperty('--font-mono');
+      root.style.removeProperty('--font-term');
+    }
+  } else {
+    // 字体名含空格或特殊字符要加引号；纯单词不加（CSS 更干净）
+    const quoted = /^[A-Za-z0-9-]+$/.test(name) ? name : `"${name}"`;
+    if (mode === 'ui') {
+      const v = `${quoted}, ${FONT_FALLBACK_UI}`;
+      root.style.setProperty('--font-ui', v);
+      root.style.setProperty('--font-display', v);   // D9：display 也跟随用户字体
+      root.style.setProperty('--font-fname', v);     // D9：fname 也跟随用户字体
+    } else {
+      root.style.setProperty('--font-mono', `${quoted}, ${FONT_FALLBACK_MONO}`);
+      root.style.setProperty('--font-term', `${quoted}, ${FONT_FALLBACK_TERM}`);
+    }
+  }
+  // 持久化：localStorage 即时（渲染层）+ config.json（Electron 菜单读）
+  const key = mode === 'ui' ? 'fb_font_ui' : 'fb_font_mono';
+  if (name) {
+    localStorage.setItem(key, name);
+    state[mode === 'ui' ? 'fontUI' : 'fontMono'] = name;
+  } else {
+    localStorage.removeItem(key);
+    state[mode === 'ui' ? 'fontUI' : 'fontMono'] = '';
+  }
+  fetch('/api/font', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ mode, name }) }).catch(() => {});
+  // 更新药丸 title，让用户知道当前用啥
+  const btn = mode === 'ui' ? $('#font-ui-btn') : $('#font-mono-btn');
+  if (btn) btn.title = (mode === 'ui' ? '界面字体' : '代码字体（终端 / 编辑器）') + (name ? `：${name}（点击切换）` : '（点击选择）');
+  // 热改已存在的终端/编辑器；首次启动时它们还没创建，创建时会读到注入后的值
+  if (typeof term !== 'undefined' && term.sessions.length && mode === 'mono') term.refont();
+  if (typeof mona !== 'undefined' && mode === 'mono') mona.refont();
+}
+
+// 启动时把持久化的字体注入回去（在 term/mona 创建前调用，让创建时读到正确值）
+function applyPersistedFont() {
+  if (state.fontUI) applyFontSilent('ui', state.fontUI);
+  if (state.fontMono) applyFontSilent('mono', state.fontMono);
+  // 同步药丸 title
+  const u = $('#font-ui-btn'), m = $('#font-mono-btn');
+  if (u) u.title = '界面字体' + (state.fontUI ? `：${state.fontUI}（点击切换）` : '（点击选择）');
+  if (m) m.title = '代码字体（终端 / 编辑器）' + (state.fontMono ? `：${state.fontMono}（点击切换）` : '（点击选择）');
+}
+// 静默注入：只改 CSS 变量，不持久化、不重渲染（启动时用，避免重复写盘和触发 refont）
+function applyFontSilent(mode, name) {
+  const root = document.documentElement;
+  const quoted = /^[A-Za-z0-9-]+$/.test(name) ? name : `"${name}"`;
+  if (mode === 'ui') {
+    const v = `${quoted}, ${FONT_FALLBACK_UI}`;
+    root.style.setProperty('--font-ui', v);
+    root.style.setProperty('--font-display', v);
+    root.style.setProperty('--font-fname', v);
+  } else {
+    root.style.setProperty('--font-mono', `${quoted}, ${FONT_FALLBACK_MONO}`);
+    root.style.setProperty('--font-term', `${quoted}, ${FONT_FALLBACK_TERM}`);
+  }
+}
+
+// ---------- 字体选择器 popover ----------
+const fontPicker = {
+  mode: null,       // 'ui' | 'mono'，当前在配哪个字体
+  open: false,
+  q: '',            // 搜索关键词
+
+  async loadList() {
+    if (state.fontList.length) return state.fontList;
+    // Electron 走 IPC 拿真实系统字体；浏览器模式走 /api/fonts 预设清单
+    if (window.fanboxFont && window.fanboxFont.list) {
+      try { state.fontList = await window.fanboxFont.list(); } catch { state.fontList = []; }
+    }
+    if (!state.fontList.length) {
+      try {
+        const r = await fetch('/api/fonts');
+        if (r.ok) state.fontList = await r.json();
+      } catch { /* */ }
+    }
+    return state.fontList;
+  },
+
+  async openFor(mode) {
+    this.mode = mode;
+    this.q = '';
+    this.open = true;
+    await this.loadList();
+    const pop = $('#font-popover');
+    const input = $('#font-pop-q');
+    if (input) input.value = '';
+    $('.font-pop-title').textContent = mode === 'ui' ? '界面字体' : '代码字体（终端 / 编辑器）';
+    this.position();
+    pop.classList.remove('hidden');
+    this.render();
+    setTimeout(() => input?.focus(), 30);
+  },
+
+  close() {
+    this.open = false;
+    $('#font-popover').classList.add('hidden');
+  },
+
+  // 锚定到触发按钮下方
+  position() {
+    const pop = $('#font-popover');
+    const btn = this.mode === 'ui' ? $('#font-ui-btn') : $('#font-mono-btn');
+    if (!btn || !pop) return;
+    const r = btn.getBoundingClientRect();
+    const pw = 280;
+    let left = r.right - pw;          // 右对齐按钮，向左展开（侧栏在左，向右会出界）
+    if (left < 8) left = 8;
+    let top = r.top - 8 - 360;        // 默认向上展开（底部按钮，列表往上长）
+    if (top < 8) top = r.bottom + 8;  // 上方空间不够则向下
+    pop.style.left = left + 'px';
+    pop.style.top = top + 'px';
+  },
+
+  // 列表过滤 + 分组排序：比例/等宽按 mode 优先级排，再按 kind(user/system/preset) 分组
+  filtered() {
+    const q = this.q.trim().toLowerCase();
+    let list = state.fontList.slice();
+    if (q) list = list.filter((f) => f.name.toLowerCase().includes(q));
+    // mode='ui'：比例优先；mode='mono'：等宽优先。都不隐藏另一类。
+    const wantFixed = this.mode === 'mono';
+    const kindOrder = { user: 0, system: 1, preset: 2 };
+    list.sort((a, b) => {
+      const fa = !!a.fixed, fb = !!b.fixed;
+      if (fa !== fb) return wantFixed ? (fa ? -1 : 1) : (fa ? 1 : -1);
+      const ka = kindOrder[a.kind] ?? 9, kb = kindOrder[b.kind] ?? 9;
+      if (ka !== kb) return ka - kb;
+      return a.name.toLowerCase() < b.name.toLowerCase() ? -1 : 1;
+    });
+    return list;
+  },
+
+  render() {
+    const ul = $('#font-pop-list');
+    if (!ul) return;
+    const list = this.filtered();
+    if (!list.length) {
+      ul.innerHTML = '<li class="font-pop-empty">没找到匹配的字体</li>';
+      return;
+    }
+    const current = this.mode === 'ui' ? state.fontUI : state.fontMono;
+    const kindOrder = ['user', 'system', 'preset'];
+    const kindLabel = { user: '已安装', system: '系统', preset: '预设' };
+    // 分组渲染：同 kind 连续出现时插一个分组小标题
+    let html = '';
+    let lastKind = null;
+    for (const f of list) {
+      if (f.kind !== lastKind && kindLabel[f.kind]) {
+        html += `<li class="font-group-label">${kindLabel[f.kind]}</li>`;
+        lastKind = f.kind;
+      }
+      const esc = f.name.replace(/'/g, "\\'").replace(/"/g, '&quot;');
+      const ff = /^[A-Za-z0-9-]+$/.test(f.name) ? f.name : `'${f.name.replace(/'/g, "\\'")}'`;
+      const active = f.name === current ? ' active' : '';
+      const tag = f.fixed ? '<span class="font-item-tag">代码</span>' : '';
+      const check = active ? '<span class="font-item-check">✓</span>' : '';
+      html += `<li class="font-item${active}" data-name="${esc}" style="font-family: ${ff}, sans-serif"><span class="font-item-name">${f.name}</span>${tag}${check}</li>`;
+    }
+    ul.innerHTML = html;
+    // 选中：点列表项 → 应用并关闭
+    ul.querySelectorAll('.font-item').forEach((li) => {
+      li.onclick = () => {
+        applyFont(this.mode, li.dataset.name);
+        this.close();
+      };
+    });
+  },
+};
 
 // ---------- 终端录像回放（黑匣子的播放端）----------
 // 保真铁律：用和 live 终端完全相同的 xterm 配置（主题/字体/unicode11/对比度）回放原始字节流，
@@ -2955,6 +3415,11 @@ const term = {
       background: '#eae5d8', foreground: '#1a1a1a', cursor: '#ff433d', cursorAccent: '#eae5d8', selectionBackground: '#ff433d22',
       black: '#0a0a0a', red: '#cc1f1a', green: '#00803a', yellow: '#8a6d00', blue: '#0000cc', magenta: '#9a2a8a', cyan: '#007a8a', white: '#57534a',
       brightBlack: '#57534a', brightRed: '#e8302a', brightGreen: '#00a33e', brightYellow: '#a67c00', brightBlue: '#2222dd', brightMagenta: '#b03aa0', brightCyan: '#008a9a', brightWhite: '#0a0a0a',
+    },
+    macos: {
+      background: '#ffffff', foreground: '#1d1d1f', cursor: '#0a84ff', cursorAccent: '#ffffff', selectionBackground: '#0a84ff33',
+      black: '#1d1d1f', red: '#ff453a', green: '#30d158', yellow: '#ff9f0a', blue: '#0a84ff', magenta: '#bf5af2', cyan: '#40c8e0', white: '#6e6e73',
+      brightBlack: '#a1a1a6', brightRed: '#ff6961', brightGreen: '#50e36b', brightYellow: '#ffb340', brightBlue: '#409cff', brightMagenta: '#d18cff', brightCyan: '#64dffd', brightWhite: '#1d1d1f',
     },
   },
   theme() { return this.themes[state.theme] || this.themes.terminal; },
@@ -3524,6 +3989,8 @@ const term = {
     });
   },
   retheme() { const th = this.theme(); this.sessions.forEach((s) => { s.xterm.options.theme = th; }); },
+  // 热改终端字体：xterm.options.fontFamily 支持运行时改，不销毁重建（保会话状态）。换后调 fit() 触发 WebGL glyph 重绘。
+  refont() { const ff = getComputedStyle(document.documentElement).getPropertyValue('--font-term').trim() || 'monospace'; this.sessions.forEach((s) => { s.xterm.options.fontFamily = ff; s.fit && s.fit.fit && s.fit.fit(); }); },
 };
 
 // ---------- Agent 用量面板（侧栏常驻，可开合）----------
@@ -3812,7 +4279,7 @@ async function invokeSkillInTerm(name) {
 // ---------- Monaco 编辑器（本地 vendor，离线可用；加载失败回退 textarea）----------
 const mona = {
   editor: null, _p: null,
-  themeFor: { terminal: 'fb-dark', warm: 'fb-paper', editorial: 'fb-editorial' },
+  themeFor: { terminal: 'fb-dark', warm: 'fb-paper', editorial: 'fb-editorial', macos: 'fb-macos' },
   themeName() { return this.themeFor[state.theme] || 'fb-dark'; },
   // 散文类（md/txt/字幕）默认软换行，代码不换行
   wraps(ex) { return ['md', 'markdown', 'txt', 'log', 'srt', 'vtt', 'ass'].includes(ex); },
@@ -3857,8 +4324,11 @@ const mona = {
     m.editor.defineTheme('fb-dark', { base: 'vs-dark', inherit: true, rules: [], colors: { 'editor.background': '#0b0c0a', 'editor.foreground': '#d6dac9', 'editorLineNumber.foreground': '#4a4d42', 'editorCursor.foreground': '#cdf24b', 'editor.selectionBackground': '#cdf24b33', 'editor.lineHighlightBackground': '#ffffff08' } });
     m.editor.defineTheme('fb-paper', { base: 'vs', inherit: true, rules: [], colors: { 'editor.background': '#ece2d2', 'editor.foreground': '#4a3f30', 'editorLineNumber.foreground': '#b3a589', 'editorCursor.foreground': '#cc785c', 'editor.selectionBackground': '#cc785c33', 'editor.lineHighlightBackground': '#00000008' } });
     m.editor.defineTheme('fb-editorial', { base: 'vs', inherit: true, rules: [], colors: { 'editor.background': '#eae5d8', 'editor.foreground': '#1a1a1a', 'editorLineNumber.foreground': '#9a958a', 'editorCursor.foreground': '#ff433d', 'editor.selectionBackground': '#ff433d22', 'editor.lineHighlightBackground': '#00000008' } });
+    m.editor.defineTheme('fb-macos', { base: 'vs', inherit: true, rules: [], colors: { 'editor.background': '#ffffff', 'editor.foreground': '#1d1d1f', 'editorLineNumber.foreground': '#a1a1a6', 'editorCursor.foreground': '#0a84ff', 'editor.selectionBackground': '#0a84ff33', 'editor.lineHighlightBackground': '#00000008' } });
   },
   retheme() { if (this.editor && window.monaco) window.monaco.editor.setTheme(this.themeName()); },
+  // 热改 Monaco 字体：updateOptions 支持运行时改，主编辑器 + diff 编辑器都覆盖。
+  refont() { const ff = getComputedStyle(document.documentElement).getPropertyValue('--font-mono').trim() || 'monospace'; if (this.editor) try { this.editor.updateOptions({ fontFamily: ff }); } catch { /* */ } if (this.diffEditor) try { this.diffEditor.updateOptions({ fontFamily: ff }); } catch { /* */ } },
   // 只读并排 diff：HEAD 版本 vs 工作区当前内容，复用 editor 槽位让 disposeIfAny 统一回收
   openDiff(host, original, modified, ex) {
     const monaco = window.monaco;
@@ -4512,6 +4982,7 @@ async function init() {
   if (window.fanboxEnv && window.fanboxEnv.isDesktopApp) document.documentElement.classList.add('desktop');
   try { window.fanboxWin?.trafficLights(true); } catch { /* 重载后兜底恢复系统按钮，防上次全屏藏了没显回来 */ }
   applyTheme(state.theme, false);
+  applyPersistedFont(); // 注入持久化的自定义字体（在 term/mona 创建前，让创建时读到正确值）
   if (state.sidebarCollapsed) { $('#app').classList.add('sidebar-collapsed'); $('#btn-sidebar')?.classList.add('on'); }
   applyLayout();
   term.applyDock(); // 初始就给 #main-body 设好 dock 类，决定预览/文件管理方向
@@ -4539,6 +5010,7 @@ async function init() {
     img.src = '/fs' + encodeURI(abs);
   }, true);
   document.querySelectorAll('#theme-switch .theme-seg button').forEach((b) => { b.onclick = () => applyTheme(b.dataset.skin); });
+  bindFontPicker(); // 字体选择器：两个药丸按钮 + popover（搜索/选/恢复默认/ESC/点外部关闭）
   await loadRoots();
   await loadFavorites();
   loadAgentProjects();
