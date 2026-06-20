@@ -732,8 +732,8 @@ kbd {
 .font-seg .font-toggle { flex: 1; border: 1px solid var(--border); border-radius: 7px; background: var(--bg-3); color: var(--text-dim); padding: 6px 4px; font-size: 13px; font-weight: 600; cursor: pointer; font-family: var(--font-ui); transition: 0.12s; }
 .font-seg .font-toggle:hover { color: var(--accent); border-color: var(--accent); }
 .font-seg .font-toggle.active { color: var(--accent); border-color: var(--accent); }
-/* 字体按钮 tooltip：往下显示（按钮在侧栏中部，下方有空间），限宽换行 + 系统字体防跳变 */
-.font-toggle[data-tip]:hover::after { max-width: 160px; white-space: normal; text-align: center; font-family: -apple-system, BlinkMacSystemFont, sans-serif; }
+/* 字体按钮 tooltip：与按钮同宽（left:0;right:0 撑满），限宽换行 + 系统字体防跳变 */
+.font-toggle[data-tip]:hover::after { left: 0; right: 0; transform: none; width: auto; max-width: none; min-width: 0; white-space: normal; text-align: center; font-family: -apple-system, BlinkMacSystemFont, sans-serif; }
 
 /* 字体选择器 popover：复用 .shot-card 的玻璃浮层风格，走 CSS 变量让 4 套皮肤自动适配 */
 .font-popover.hidden { display: none; }
