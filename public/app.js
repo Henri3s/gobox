@@ -877,6 +877,7 @@ function bindSelectionToTerminal() {
 // 给「无可见文字」的图标按钮挂即时气泡标签：把原生 title 转成 data-tip（CSS 气泡），移除 title 防双重提示
 function enableTooltips(scope) {
   (scope || document).querySelectorAll('[title]').forEach((el) => {
+    if (el.id && el.id.includes('resizer')) return; // 拖拽条的 ::after/::before 另有他用，不转为 CSS tooltip
     const label = el.getAttribute('title');
     if (!label) return;
     if (el.textContent.replace(/\s/g, '').length > 2) return; // 有明确文字标签的按钮就不加气泡
