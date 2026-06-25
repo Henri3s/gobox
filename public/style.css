@@ -1204,6 +1204,7 @@ kbd {
 .term-actions .agent-launch:hover { background: var(--bg-3); }
 .term-actions .agent-launch svg { display: block; flex: none; }
 .term-actions .agent-launch + .agent-launch { margin-right: 4px; } /* 两个 agent 按钮成组，与右侧其它操作拉开一点距离 */
+.term-actions #term-omp,
 .term-actions #term-claude { margin-right: 0; }
 
 #xterm-host { flex: 1; position: relative; min-height: 0; overflow: hidden; background: var(--bg); }

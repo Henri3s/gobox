@@ -2618,6 +2618,7 @@ function bindEvents() {
   if (window.fanboxWechat) window.fanboxWechat.env().then((e) => wechatView.syncDot(!!(e && e.connected))).catch(() => {});
   $('#btn-terminal').onclick = () => term.toggle();
   $('#term-antigravity').onclick = () => { wechatView.close(); term.launchAgent('agy'); };
+  $('#term-omp').onclick = () => { wechatView.close(); term.launchAgent('omp'); };
   $('#term-claude').onclick = () => { wechatView.close(); term.launchAgent('claude --dangerously-skip-permissions'); };
   $('#term-codex').onclick = () => { wechatView.close(); term.launchAgent('codex'); };
   usagePanel.bind();
