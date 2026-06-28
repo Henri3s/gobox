@@ -34,11 +34,17 @@ const FAKE_HOME = '/tmp/fb-home';
   // 预览 README
   await win.evaluate(() => { const e = state.entries.find((x) => x.name === 'README.md'); if (e) openPreview(e); });
   await win.waitForTimeout(1500);
-  for (const name of ['终端', '档案', '索引']) {
+  const mapping = {
+    '终端': 'screenshot-volt.png',
+    '档案': 'screenshot-archive.png',
+    '索引': 'screenshot-index.png',
+    '系统': 'screenshot-system.png'
+  };
+  for (const name of ['终端', '档案', '索引', '系统']) {
     await win.evaluate((n) => { const b = [...document.querySelectorAll('button')].find((x) => x.textContent.trim() === n); if (b) b.click(); }, name);
     await win.waitForTimeout(900);
     await win.evaluate(() => document.querySelector('.guide-overlay')?.remove());
-    await win.screenshot({ path: path.join(ROOT, 'assets', `screenshot-${name}.png`) });
+    await win.screenshot({ path: path.join(ROOT, 'assets', mapping[name]) });
     console.log('shot', name);
   }
   await app.close();
