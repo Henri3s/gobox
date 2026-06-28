@@ -2824,6 +2824,13 @@ function initSystemThemeSync() {
       }
     });
   }
+  if (window.matchMedia) {
+    window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => {
+      if (state.theme === "macos") {
+        applyTheme('macos', false);
+      }
+    });
+  }
 }
 
 // ---------- 字体选择器事件绑定 ----------
@@ -2866,7 +2873,10 @@ function applyTheme(skin, rerender = true) {
   }
   localStorage.setItem('fb_theme', skin);
   const link = document.getElementById('hljs-theme');
-  if (link) link.href = '/vendor/hljs/styles/' + (skin === 'terminal' ? 'github-dark' : 'github') + '.min.css';
+  if (link) {
+    const isDark = skin === 'terminal' || (skin === 'macos' && window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches);
+    link.href = '/vendor/hljs/styles/' + (isDark ? 'github-dark' : 'github') + '.min.css';
+  }
   document.querySelectorAll('#theme-switch .theme-seg button').forEach((b) => b.classList.toggle('active', b.dataset.skin === skin));
   if (typeof term !== 'undefined' && term.sessions.length) term.retheme();
   if (typeof mona !== 'undefined') mona.retheme();
@@ -3457,7 +3467,19 @@ const term = {
       brightBlack: '#a1a1a6', brightRed: '#ff6961', brightGreen: '#50e36b', brightYellow: '#ffb340', brightBlue: '#409cff', brightMagenta: '#d18cff', brightCyan: '#64dffd', brightWhite: '#1d1d1f',
     },
   },
-  theme() { return this.themes[state.theme] || this.themes.terminal; },
+  theme() {
+    if (state.theme === 'macos') {
+      const isDark = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches;
+      if (isDark) {
+        return {
+          background: '#1e1e1e', foreground: '#f5f5f7', cursor: '#0a84ff', cursorAccent: '#1e1e1e', selectionBackground: '#0a84ff40',
+          black: '#1e1e1e', red: '#ff453a', green: '#30d158', yellow: '#ffd60a', blue: '#0a84ff', magenta: '#bf5af2', cyan: '#40c8e0', white: '#aeaeb2',
+          brightBlack: '#636366', brightRed: '#ff6961', brightGreen: '#50e36b', brightYellow: '#ffb340', brightBlue: '#409cff', brightMagenta: '#d18cff', brightCyan: '#64dffd', brightWhite: '#f5f5f7',
+        };
+      }
+    }
+    return this.themes[state.theme] || this.themes.terminal;
+  },
   toggle() {
     if (!this.available()) { if (state.cwd) openWith(state.cwd, 'terminal'); return; } // 浏览器降级到系统终端
     const hidden = $('#terminal-panel').classList.contains('hidden');
@@ -4395,7 +4417,13 @@ async function invokeSkillInTerm(name) {
 const mona = {
   editor: null, _p: null,
   themeFor: { terminal: 'fb-dark', warm: 'fb-paper', editorial: 'fb-editorial', macos: 'fb-macos' },
-  themeName() { return this.themeFor[state.theme] || 'fb-dark'; },
+  themeName() {
+    if (state.theme === 'macos') {
+      const isDark = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches;
+      return isDark ? 'fb-macos-dark' : 'fb-macos';
+    }
+    return this.themeFor[state.theme] || 'fb-dark';
+  },
   // 散文类（md/txt/字幕）默认软换行，代码不换行
   wraps(ex) { return ['md', 'markdown', 'txt', 'log', 'srt', 'vtt', 'ass'].includes(ex); },
   lang(ex) {
@@ -4440,6 +4468,7 @@ const mona = {
     m.editor.defineTheme('fb-paper', { base: 'vs', inherit: true, rules: [], colors: { 'editor.background': '#ece2d2', 'editor.foreground': '#4a3f30', 'editorLineNumber.foreground': '#b3a589', 'editorCursor.foreground': '#cc785c', 'editor.selectionBackground': '#cc785c33', 'editor.lineHighlightBackground': '#00000008' } });
     m.editor.defineTheme('fb-editorial', { base: 'vs', inherit: true, rules: [], colors: { 'editor.background': '#eae5d8', 'editor.foreground': '#1a1a1a', 'editorLineNumber.foreground': '#9a958a', 'editorCursor.foreground': '#ff433d', 'editor.selectionBackground': '#ff433d22', 'editor.lineHighlightBackground': '#00000008' } });
     m.editor.defineTheme('fb-macos', { base: 'vs', inherit: true, rules: [], colors: { 'editor.background': '#ffffff', 'editor.foreground': '#1d1d1f', 'editorLineNumber.foreground': '#a1a1a6', 'editorCursor.foreground': '#0a84ff', 'editor.selectionBackground': '#0a84ff33', 'editor.lineHighlightBackground': '#00000008' } });
+    m.editor.defineTheme('fb-macos-dark', { base: 'vs-dark', inherit: true, rules: [], colors: { 'editor.background': '#1e1e1e', 'editor.foreground': '#f5f5f7', 'editorLineNumber.foreground': '#636366', 'editorCursor.foreground': '#0a84ff', 'editor.selectionBackground': '#0a84ff33', 'editor.lineHighlightBackground': '#ffffff08' } });
   },
   retheme() { if (this.editor && window.monaco) window.monaco.editor.setTheme(this.themeName()); },
   // 热改 Monaco 字体：updateOptions 支持运行时改，主编辑器 + diff 编辑器都覆盖。

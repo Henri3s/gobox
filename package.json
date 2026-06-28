@@ -1,6 +1,6 @@
 {
   "name": "gobox",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Gobox — the cockpit for coding agents. Command Claude Code or Codex, watch every file and line they change, and take over anytime.",
   "bin": {
     "gobox": "server.js"
@@ -34,7 +34,7 @@
     "mac": {
       "category": "public.app-category.developer-tools",
       "icon": "build/icon.icns",
-      "identity": "Apple Development: chen yunfei (FG7WYU86RP)",
+      "identity": "Apple Development: zhouyilin@me.com (6QA8PU7JUR)",
       "hardenedRuntime": true,
       "gatekeeperAssess": false,
       "entitlements": "build/entitlements.mac.plist",
