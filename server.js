@@ -1784,8 +1784,8 @@ async function readCwdFromHead(file, bytes) {
   } finally { await fh.close(); }
 }
 
-async function agentProjects() {
-  if (agentProjCache.data && Date.now() - agentProjCache.at < 60000) return agentProjCache.data;
+async function agentProjects(force = false) {
+  if (!force && agentProjCache.data && Date.now() - agentProjCache.at < 60000) return agentProjCache.data;
   const cutoff = Date.now() - 30 * 86400000;
   const map = new Map(); // cwd -> { lastActive, agents: Set }
   const add = (cwd, t, agent) => {
@@ -2018,8 +2018,9 @@ async function codexSkillEvents(cutoff) {
   return all;
 }
 
-async function skillsData() {
-  if (skillsCache.data && Date.now() - skillsCache.at < 30000) return skillsCache.data;
+async function skillsData(opts = {}) {
+  const { force = false, extraCwds = [] } = opts;
+  if (!force && skillsCache.data && Date.now() - skillsCache.at < 30000) return skillsCache.data;
   const cutoff = Date.now() - 45 * 86400000;
   const items = [];
   await scanSkillRoot(CLAUDE_SKILLS, 'claude', '~/.claude', items);
@@ -2035,12 +2036,23 @@ async function skillsData() {
     }
   } catch { /* 没装插件 */ }
   // 最近 agent 项目的项目级 skills
+  const seenCwds = new Set();
   try {
-    const pj = await agentProjects();
+    const pj = await agentProjects(force);
     for (const p of pj.projects || []) {
+      seenCwds.add(p.path);
       await scanSkillRoot(path.join(p.path, '.claude', 'skills'), 'project', p.name, items);
     }
   } catch { /* */ }
+  // 额外追加扫描当前浏览目录（不在最近12个项目里也能看到）
+  for (const cwd of extraCwds) {
+    if (!cwd || seenCwds.has(cwd)) continue;
+    try {
+      if ((await fsp.stat(cwd)).isDirectory()) {
+        await scanSkillRoot(path.join(cwd, '.claude', 'skills'), 'project', path.basename(cwd), items);
+      }
+    } catch { /* */ }
+  }
 
   // 触发统计合并（按 skill 名聚合两端事件）
   const [ce, xe] = await Promise.all([
@@ -2314,6 +2326,11 @@ const server = http.createServer(async (req, res) => {
     }
     if (p === '/api/skills') {
       return sendJSON(res, 200, await skillsData());
+    }
+    if (p === '/api/skills/refresh' && req.method === 'POST') {
+      const b = await readBody(req);
+      const extraCwds = b && b.cwd ? [b.cwd] : [];
+      return sendJSON(res, 200, await skillsData({ force: true, extraCwds }));
     }
     if (p === '/api/skills/toggle' && req.method === 'POST') {
       const b = await readBody(req);
